@@ -1,0 +1,14 @@
+{
+  "name": "rocketlane-bulletin-board-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sticky Notes-inspired Rocketlane custom app for customer bulletin boards.",
+  "scripts": {
+    "check:js": "node --check dist/app.js && node --check index.js",
+    "package:zip": "bash scripts/package-app.sh",
+    "screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

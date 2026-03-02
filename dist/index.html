@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Customer Bulletin Board</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">Rocketlane Custom App</p>
+          <h1>Customer Bulletin Board</h1>
+          <p id="boardScope" class="scope-text">Loading workspace context...</p>
+        </div>
+        <div class="header-actions">
+          <span id="connectionBadge" class="badge badge-muted">Initializing</span>
+          <button id="addNoteButton" class="btn btn-primary" type="button">
+            + New sticky note
+          </button>
+        </div>
+      </header>
+
+      <section class="control-row">
+        <label class="control search-control">
+          <span>Search</span>
+          <input
+            id="searchInput"
+            type="search"
+            placeholder="Search notes, updates, action items..."
+          />
+        </label>
+        <label class="control">
+          <span>Filter</span>
+          <select id="filterSelect">
+            <option value="all">All notes</option>
+            <option value="pinned">Pinned first</option>
+            <option value="recent">Recently updated</option>
+          </select>
+        </label>
+        <button id="seedDemoButton" class="btn btn-subtle" type="button">
+          Load demo notes
+        </button>
+        <button id="clearBoardButton" class="btn btn-danger-subtle" type="button">
+          Clear board
+        </button>
+      </section>
+
+      <div id="boardStats" class="board-stats"></div>
+
+      <main class="content-grid">
+        <section class="notes-column">
+          <div id="notesGrid" class="notes-grid"></div>
+          <div id="notesEmptyState" class="empty-state hidden">
+            <h2>No notes found</h2>
+            <p>Create your first sticky note to start the bulletin board.</p>
+          </div>
+        </section>
+
+        <aside class="editor-column">
+          <div id="editorEmptyState" class="editor-empty">
+            <h2>Select a sticky note</h2>
+            <p>
+              Pick a note to edit it, add bullets, or create numbered lists like
+              Gmail.
+            </p>
+          </div>
+
+          <section id="editorPanel" class="editor-panel hidden">
+            <label class="control">
+              <span>Title</span>
+              <input
+                id="noteTitleInput"
+                type="text"
+                maxlength="120"
+                placeholder="Note title"
+              />
+            </label>
+
+            <div>
+              <p class="tiny-label">Sticky color</p>
+              <div id="colorPicker" class="color-picker"></div>
+            </div>
+
+            <div class="rich-toolbar" aria-label="Formatting toolbar">
+              <button class="format-button" data-command="bold" type="button">
+                <strong>B</strong>
+              </button>
+              <button class="format-button" data-command="italic" type="button">
+                <em>I</em>
+              </button>
+              <button class="format-button" data-command="underline" type="button">
+                <u>U</u>
+              </button>
+              <div class="toolbar-divider"></div>
+              <button
+                class="format-button"
+                data-command="insertUnorderedList"
+                type="button"
+              >
+                • List
+              </button>
+              <button
+                class="format-button"
+                data-command="insertOrderedList"
+                type="button"
+              >
+                1. List
+              </button>
+              <button class="format-button" data-command="removeFormat" type="button">
+                Clear
+              </button>
+            </div>
+
+            <div
+              id="noteBodyInput"
+              class="note-body-input"
+              contenteditable="true"
+              data-placeholder="Write announcements, updates, and action items..."
+            ></div>
+
+            <footer class="editor-footer">
+              <p id="saveState" class="save-state">Saved</p>
+              <div class="footer-actions">
+                <button id="pinNoteButton" class="btn btn-subtle" type="button">
+                  Pin
+                </button>
+                <button id="deleteNoteButton" class="btn btn-danger-subtle" type="button">
+                  Delete
+                </button>
+              </div>
+            </footer>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

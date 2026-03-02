@@ -1,0 +1,14 @@
+{
+  "name": "rocketlane-invoice-access-manager-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rocketlane custom app for PDF invoice imports with role-based access controls.",
+  "scripts": {
+    "check:js": "node --check dist/app.js && node --check index.js",
+    "package:zip": "bash scripts/package-app.sh",
+    "screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

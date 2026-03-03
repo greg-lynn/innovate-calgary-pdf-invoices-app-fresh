@@ -4,6 +4,8 @@
   const STORAGE_PREFIX = "rocketlane-invoice-access";
   const STORAGE_VERSION = "v1";
   const LOG_LIMIT = 150;
+  const SDK_WAIT_MS = 4500;
+  const SDK_POLL_INTERVAL_MS = 120;
   const PDF_WORKER_CDN =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
   const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
@@ -159,7 +161,15 @@
   async function initializeRuntime() {
     const query = new URLSearchParams(window.location.search);
     const fallback = getContextFromQuery(query);
-    const sdk = resolveSdkBridge();
+    const sdk = await waitForSdkBridge(SDK_WAIT_MS);
+
+    if (!sdk && hasLegacyRocketlaneApp()) {
+      try {
+        return await initializeLegacyRuntime(fallback);
+      } catch (error) {
+        console.warn("Legacy Rocketlane runtime init failed.", error);
+      }
+    }
 
     if (!sdk || typeof sdk.init !== "function") {
       return {
@@ -201,6 +211,40 @@
     }
   }
 
+  function hasLegacyRocketlaneApp() {
+    return Boolean(
+      window.rocketlaneApp &&
+        typeof window.rocketlaneApp.init === "function"
+    );
+  }
+
+  async function initializeLegacyRuntime(fallback) {
+    const app = await window.rocketlaneApp.init();
+    const contextEnvelope =
+      app && typeof app.context === "function" ? await app.context() : {};
+
+    const account =
+      (contextEnvelope &&
+        (contextEnvelope.account || contextEnvelope.currentAccount)) ||
+      null;
+    const user =
+      (contextEnvelope && (contextEnvelope.user || contextEnvelope.currentUser)) ||
+      null;
+    const project =
+      (contextEnvelope &&
+        (contextEnvelope.project || contextEnvelope.currentProject)) ||
+      null;
+
+    return {
+      client: app,
+      connected: true,
+      context: mergeContextData(fallback, account, user, project),
+      rawUser: user,
+      rawProject: project,
+      error: null,
+    };
+  }
+
   function resolveSdkBridge() {
     if (window.rliSdk && typeof window.rliSdk.init === "function") {
       return window.rliSdk;
@@ -222,34 +266,111 @@
     return null;
   }
 
+  function waitForSdkBridge(timeoutMs) {
+    const existing = resolveSdkBridge();
+    if (existing) {
+      return Promise.resolve(existing);
+    }
+
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const timer = window.setInterval(() => {
+        const sdk = resolveSdkBridge();
+        if (sdk) {
+          window.clearInterval(timer);
+          resolve(sdk);
+          return;
+        }
+
+        if (Date.now() - startedAt >= timeoutMs) {
+          window.clearInterval(timer);
+          resolve(null);
+        }
+      }, SDK_POLL_INTERVAL_MS);
+    });
+  }
+
   async function safeGetClientData(client, objectName) {
     if (!client || !client.data || typeof client.data.get !== "function") {
       return null;
     }
 
-    try {
-      return await client.data.get(objectName);
-    } catch (_error) {
-      const aliases = {
-        account: "GET_ACCOUNT_DATA",
-        user: "GET_USER_DATA",
-        project: "GET_PROJECT_DATA",
-      };
-      const identifier =
-        client.data.dataIdentifiers &&
-        aliases[objectName] &&
-        client.data.dataIdentifiers[aliases[objectName]];
-
-      if (!identifier) {
+    const attempted = new Set();
+    const fetchByIdentifier = async (identifier) => {
+      const key = String(identifier || "").trim();
+      if (!key || attempted.has(key)) {
         return null;
       }
-
+      attempted.add(key);
       try {
-        return await client.data.get(identifier);
-      } catch (_error2) {
+        const value = await client.data.get(key);
+        if (value != null) {
+          return value;
+        }
+      } catch (_error) {
         return null;
+      }
+      return null;
+    };
+
+    try {
+      const direct = await client.data.get(objectName);
+      if (direct != null) {
+        return direct;
+      }
+    } catch (_error) {
+      // Ignore and try broader lookup strategy below.
+    }
+
+    const directAliases = {
+      account: ["account", "current_account", "currentAccount", "workspace"],
+      user: ["user", "current_user", "currentUser", "viewer"],
+      project: ["project", "current_project", "currentProject"],
+    };
+    const directCandidates = directAliases[objectName] || [];
+    for (let i = 0; i < directCandidates.length; i += 1) {
+      const found = await fetchByIdentifier(directCandidates[i]);
+      if (found) {
+        return found;
       }
     }
+
+    const identifiers = client.data.dataIdentifiers || {};
+    const aliasKeys = {
+      account: ["GET_ACCOUNT_DATA", "CURRENT_ACCOUNT", "ACCOUNT"],
+      user: ["GET_USER_DATA", "CURRENT_USER", "USER", "ACCOUNT_USER"],
+      project: ["GET_PROJECT_DATA", "CURRENT_PROJECT", "PROJECT"],
+    };
+    const primaryAliasKeys = aliasKeys[objectName] || [];
+    for (let i = 0; i < primaryAliasKeys.length; i += 1) {
+      const identifier = identifiers[primaryAliasKeys[i]];
+      const found = await fetchByIdentifier(identifier);
+      if (found) {
+        return found;
+      }
+    }
+
+    const tokenMatchers = {
+      account: /(ACCOUNT|WORKSPACE)/i,
+      user: /(USER|MEMBER|VIEWER)/i,
+      project: /(PROJECT)/i,
+    };
+    const matcher = tokenMatchers[objectName];
+    if (matcher) {
+      const keys = Object.keys(identifiers);
+      for (let i = 0; i < keys.length; i += 1) {
+        const key = keys[i];
+        if (!matcher.test(key)) {
+          continue;
+        }
+        const found = await fetchByIdentifier(identifiers[key]);
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    return null;
   }
 
   function getContextFromQuery(query) {

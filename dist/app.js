@@ -10,9 +10,7 @@
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
   const SOURCE_PROJECT_NAMES = [
-    "invoices project",
-    "project for invoices",
-    "test project for invoices",
+    "expert advisor program invoices",
   ];
 
   const SAMPLE_PDF_DATA_URL =
@@ -25,7 +23,7 @@
     RUNTIME_INIT_FAILED:
       "Verify the app is opened inside Rocketlane and the SDK script is loaded correctly.",
     SOURCE_PROJECTS_NOT_FOUND:
-      "Create one of these projects: Invoices Project, Project for Invoices, Test Project for Invoices.",
+      "Create the source project named: Expert Advisor Program Invoices.",
     SOURCE_FETCH_FAILED:
       "Confirm Rocketlane API endpoints are reachable from this workspace and retry.",
     SOURCE_INVOICES_NOT_FOUND:

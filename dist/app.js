@@ -6,6 +6,7 @@
   const LOG_LIMIT = 200;
   const SDK_WAIT_MS = 4500;
   const SDK_POLL_INTERVAL_MS = 120;
+  const MAX_PDF_SCRUB_PAGES = 6;
   const PDF_WORKER_CDN =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -26,12 +27,16 @@
       "Create the source project named: Expert Advisor Program Invoices.",
     SOURCE_FETCH_FAILED:
       "Confirm Rocketlane API endpoints are reachable from this workspace and retry.",
+    PERMISSION_FETCH_FAILED:
+      "Confirm team member APIs are accessible so permission-set based access can be enforced.",
     SOURCE_INVOICES_NOT_FOUND:
       "Add PDF invoice files/documents to the source project to populate this table.",
     PDF_LIB_UNAVAILABLE:
       "Allow access to PDF.js or bundle PDF.js assets with this app package.",
     PDF_PREVIEW_FAILED:
       "Verify the invoice file URL is valid and accessible for this user session.",
+    PDF_SCRUB_FAILED:
+      "The PDF could not be scanned for email addresses. Verify file access and PDF text content.",
   };
 
   const state = {
@@ -45,6 +50,7 @@
     logs: [],
     invoices: [],
     sourceProjects: [],
+    teamMembers: [],
     selectedInvoiceId: null,
     searchQuery: "",
     activeTab: "invoices",
@@ -94,9 +100,29 @@
       if (apiUser && typeof apiUser === "object") {
         state.rawUser = mergeObjects(state.rawUser, apiUser);
       }
+
+      try {
+        state.teamMembers = await fetchTeamMembers();
+      } catch (error) {
+        appendLog(
+          "PERMISSION_FETCH_FAILED",
+          "Unable to fetch team members for permission-set resolution.",
+          error
+        );
+      }
     }
 
-    state.access = deriveAccessProfile(state.rawUser, state.rawAccount, runtime.context);
+    const permissionHint = resolveCurrentUserPermission(
+      state.teamMembers,
+      state.rawUser,
+      runtime.context
+    );
+    state.access = deriveAccessProfile(
+      state.rawUser,
+      state.rawAccount,
+      runtime.context,
+      permissionHint
+    );
 
     updateHeader();
     configureUiForAccess();
@@ -446,6 +472,89 @@
     return null;
   }
 
+  async function fetchTeamMembers() {
+    const members = await requestCollection(
+      [
+        "/api/1.0/users?size=500",
+        "/api/1.0/users?limit=500",
+        "/api/1.0/users",
+        "/api/1.0/account-users?size=500",
+        "/api/1.0/accountUsers?size=500",
+      ],
+      ["users", "members", "teamMembers", "data", "content", "results", "items"]
+    );
+
+    return members.map(normalizeTeamMember).filter(Boolean);
+  }
+
+  function normalizeTeamMember(raw) {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+
+    const id = pickFirst(raw.id || raw.userId || raw._id);
+    const email = normalizeEmail(
+      pickFirst(
+        raw.email ||
+          raw.userEmail ||
+          raw.workEmail ||
+          (raw.user && raw.user.email) ||
+          (raw.profile && raw.profile.email)
+      )
+    );
+    if (!email && !id) {
+      return null;
+    }
+
+    const permission = pickFirst(
+      raw.permission ||
+        raw.permissionSet ||
+        raw.accountPermission ||
+        raw.access ||
+        (raw.permissionSetObj && raw.permissionSetObj.name) ||
+        (raw.permissions && raw.permissions.name)
+    );
+    const roleLabel = pickFirst(
+      raw.role || raw.userRole || raw.designation || raw.title
+    );
+
+    return {
+      id,
+      email,
+      permission,
+      roleLabel,
+    };
+  }
+
+  function resolveCurrentUserPermission(members, rawUser, context) {
+    if (!Array.isArray(members) || !members.length) {
+      return null;
+    }
+
+    const targetEmail = normalizeEmail(
+      extractPrimaryEmail(rawUser) || context.userEmail || ""
+    );
+    const targetId = pickFirst(
+      (rawUser && (rawUser.id || rawUser.userId || rawUser._id)) || context.userId
+    );
+
+    if (targetEmail) {
+      const byEmail = members.find((member) => member.email === targetEmail);
+      if (byEmail) {
+        return byEmail;
+      }
+    }
+
+    if (targetId) {
+      const byId = members.find((member) => member.id && member.id === targetId);
+      if (byId) {
+        return byId;
+      }
+    }
+
+    return null;
+  }
+
   async function refreshInvoicesFromSource() {
     state.syncStatus = "Fetching invoices from source projects...";
     renderSyncStatus();
@@ -571,12 +680,12 @@
     const invoices = [];
     for (let i = 0; i < records.length; i += 1) {
       const candidates = extractPdfCandidates(records[i]);
-      candidates.forEach((candidate) => {
-        const invoice = buildInvoiceFromCandidate(candidate, project);
+      for (let j = 0; j < candidates.length; j += 1) {
+        const invoice = await buildInvoiceFromCandidate(candidates[j], project);
         if (invoice) {
           invoices.push(invoice);
         }
-      });
+      }
     }
 
     if (!invoices.length) {
@@ -784,7 +893,7 @@
     return false;
   }
 
-  function buildInvoiceFromCandidate(node, project) {
+  async function buildInvoiceFromCandidate(node, project) {
     const pdfUrlRaw = String(
       node.signedUrl || node.downloadUrl || node.fileUrl || node.url || node.href || ""
     ).trim();
@@ -814,9 +923,20 @@
       ) || new Date().toISOString();
 
     const nodeContacts = extractContacts(node);
-    const ownerName = nodeContacts.names[0] || project.ownerName || "Unassigned";
+    const ownerName =
+      pickFirst(
+        node.projectManagerName ||
+          node.expertAdvisorName ||
+          node.pmName ||
+          node.expertAdvisor ||
+          node.projectManager
+      ) ||
+      nodeContacts.names[0] ||
+      project.ownerName ||
+      "Unassigned";
+    const scrubbedEmails = await scrubPdfForEmails(pdfUrl, invoiceNumber);
     const associatedEmails = dedupeEmails(
-      nodeContacts.emails.concat(project.ownerEmails || [])
+      nodeContacts.emails.concat(project.ownerEmails || []).concat(scrubbedEmails)
     );
 
     return normalizeInvoice({
@@ -832,6 +952,88 @@
       associatedEmails,
       sourceProjectName: project.name,
     });
+  }
+
+  async function scrubPdfForEmails(pdfUrl, invoiceRef) {
+    try {
+      ensurePdfJsAvailable();
+    } catch (error) {
+      appendLog("PDF_LIB_UNAVAILABLE", "PDF.js was unavailable for PDF email scrubbing.", error);
+      return [];
+    }
+
+    try {
+      const buffer = await fetchPdfArrayBuffer(pdfUrl);
+      if (!buffer) {
+        return [];
+      }
+      const text = await extractTextFromPdfBuffer(buffer, MAX_PDF_SCRUB_PAGES);
+      return extractEmailsFromText(text);
+    } catch (error) {
+      appendLog(
+        "PDF_SCRUB_FAILED",
+        "Failed to scrub PDF for access emails (" + invoiceRef + ").",
+        error
+      );
+      return [];
+    }
+  }
+
+  async function fetchPdfArrayBuffer(pdfUrl) {
+    if (pdfUrl.startsWith("data:application/pdf;base64,")) {
+      const encoded = pdfUrl.slice("data:application/pdf;base64,".length);
+      const bytes = window.atob(encoded);
+      const len = bytes.length;
+      const array = new Uint8Array(len);
+      for (let i = 0; i < len; i += 1) {
+        array[i] = bytes.charCodeAt(i);
+      }
+      return array.buffer;
+    }
+
+    const response = await fetch(pdfUrl, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      throw new Error("Unable to fetch PDF (" + response.status + ")");
+    }
+    return await response.arrayBuffer();
+  }
+
+  async function extractTextFromPdfBuffer(buffer, maxPages) {
+    const loadingTask = window.pdfjsLib.getDocument({ data: buffer });
+    try {
+      const pdfDocument = await loadingTask.promise;
+      const pages = Math.min(pdfDocument.numPages || 0, maxPages || pdfDocument.numPages);
+      const fragments = [];
+      for (let pageNumber = 1; pageNumber <= pages; pageNumber += 1) {
+        const page = await pdfDocument.getPage(pageNumber);
+        const content = await page.getTextContent();
+        fragments.push(content.items.map((item) => item.str).join(" "));
+      }
+      if (typeof pdfDocument.cleanup === "function") {
+        pdfDocument.cleanup();
+      }
+      return fragments.join("\n");
+    } finally {
+      if (loadingTask && typeof loadingTask.destroy === "function") {
+        loadingTask.destroy();
+      }
+    }
+  }
+
+  function ensurePdfJsAvailable() {
+    if (!window.pdfjsLib || typeof window.pdfjsLib.getDocument !== "function") {
+      throw new Error("PDF.js is not available.");
+    }
+    if (window.pdfjsLib.GlobalWorkerOptions) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_CDN;
+    }
+  }
+
+  function extractEmailsFromText(text) {
+    return dedupeEmails(String(text || "").match(EMAIL_PATTERN) || []);
   }
 
   function createSampleInvoice() {
@@ -1341,23 +1543,20 @@
     renderLogs();
   }
 
-  function deriveAccessProfile(rawUser, rawAccount, context) {
+  function deriveAccessProfile(rawUser, rawAccount, context, permissionHint) {
     const displayName =
       pickFirst(
         rawUser &&
           (rawUser.name || rawUser.fullName || rawUser.displayName || rawUser.email)
       ) || context.userName;
     const email = normalizeEmail(extractPrimaryEmail(rawUser) || context.userEmail || "");
-    const role = inferRole(rawUser, rawAccount, context.userRole);
+    const permissionRole = normalizePermissionRole(
+      permissionHint && permissionHint.permission
+    );
+    const role =
+      permissionRole || inferRole(rawUser, rawAccount, context.userRole);
     const isAdmin = role === "admin";
-    const roleLabel =
-      role === "admin"
-        ? "Admin"
-        : role === "collaborator"
-          ? "Collaborator"
-          : role === "expert_advisor"
-            ? "Expert Advisor"
-            : "Restricted";
+    const roleLabel = resolveRoleLabel(role, permissionHint);
 
     return {
       role,
@@ -1365,7 +1564,24 @@
       isAdmin,
       email,
       displayName,
+      permission: permissionHint && permissionHint.permission ? permissionHint.permission : "",
     };
+  }
+
+  function resolveRoleLabel(role, permissionHint) {
+    if (permissionHint && permissionHint.permission) {
+      return permissionHint.permission;
+    }
+    if (role === "admin") {
+      return "Account Admin";
+    }
+    if (role === "collaborator") {
+      return "Collaborator";
+    }
+    if (role === "expert_advisor") {
+      return "Expert Advisor";
+    }
+    return "Restricted";
   }
 
   function inferRole(user, account, fallbackRole) {
@@ -1400,6 +1616,23 @@
       return "collaborator";
     }
     return "non_admin";
+  }
+
+  function normalizePermissionRole(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+      return "";
+    }
+    if (text.includes("account admin") || text.includes("admin")) {
+      return "admin";
+    }
+    if (text.includes("expert") && text.includes("advisor")) {
+      return "expert_advisor";
+    }
+    if (text.includes("collaborator")) {
+      return "collaborator";
+    }
+    return "";
   }
 
   function collectRoleTokens(value, target, depth) {

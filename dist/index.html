@@ -9,9 +9,13 @@
   </head>
   <body>
     <div class="app-shell">
+      <div class="brand-strip">
+        <span class="brand-dot"></span>
+        <span>Rocketlane Marketplace App</span>
+      </div>
       <header class="app-header">
         <div>
-          <p class="eyebrow">Rocketlane Custom App</p>
+          <p class="eyebrow">Invoice Governance</p>
           <h1>Invoice Access Manager</h1>
           <p id="scopeText" class="scope-text">Loading workspace context...</p>
         </div>
@@ -34,13 +38,13 @@
         </button>
         <button
           id="tabLogsButton"
-          class="tab-button hidden"
+          class="tab-button"
           role="tab"
           aria-selected="false"
           data-tab="logs"
           type="button"
         >
-          Admin diagnostics
+          Diagnostics
         </button>
       </section>
 
@@ -162,9 +166,10 @@
               Clear logs
             </button>
           </div>
-          <p class="muted">
-            This tab is visible only to admins. Each log includes a suggested remediation.
+          <p id="logsInfoText" class="muted">
+            Admin users can view full diagnostics. Non-admin users can view access guidance.
           </p>
+          <div id="logsAccessNotice" class="access-notice hidden"></div>
           <div id="logsList" class="logs-list"></div>
           <div id="logsEmptyState" class="empty-state hidden">
             <h3>No logs recorded</h3>

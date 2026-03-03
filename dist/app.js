@@ -132,6 +132,8 @@
     refs.logsList = document.getElementById("logsList");
     refs.logsEmptyState = document.getElementById("logsEmptyState");
     refs.clearLogsButton = document.getElementById("clearLogsButton");
+    refs.logsInfoText = document.getElementById("logsInfoText");
+    refs.logsAccessNotice = document.getElementById("logsAccessNotice");
   }
 
   function bindEvents() {
@@ -157,8 +159,9 @@
   async function initializeRuntime() {
     const query = new URLSearchParams(window.location.search);
     const fallback = getContextFromQuery(query);
+    const sdk = resolveSdkBridge();
 
-    if (!window.rliSdk || typeof window.rliSdk.init !== "function") {
+    if (!sdk || typeof sdk.init !== "function") {
       return {
         client: null,
         connected: false,
@@ -170,7 +173,7 @@
     }
 
     try {
-      const client = await window.rliSdk.init({});
+      const client = await sdk.init({});
       const [account, user, project] = await Promise.all([
         safeGetClientData(client, "account"),
         safeGetClientData(client, "user"),
@@ -196,6 +199,27 @@
         error,
       };
     }
+  }
+
+  function resolveSdkBridge() {
+    if (window.rliSdk && typeof window.rliSdk.init === "function") {
+      return window.rliSdk;
+    }
+
+    try {
+      if (
+        window.parent &&
+        window.parent !== window &&
+        window.parent.rliSdk &&
+        typeof window.parent.rliSdk.init === "function"
+      ) {
+        return window.parent.rliSdk;
+      }
+    } catch (_error) {
+      // Accessing window.parent can fail in cross-origin embeds.
+    }
+
+    return null;
   }
 
   async function safeGetClientData(client, objectName) {
@@ -307,15 +331,25 @@
   }
 
   function configureUiForAccess() {
+    refs.tabLogsButton.classList.remove("hidden");
+
     if (state.access.isAdmin) {
-      refs.tabLogsButton.classList.remove("hidden");
+      refs.tabLogsButton.textContent = "Diagnostics";
+      refs.tabLogsButton.classList.remove("locked");
       refs.pmEmailInput.readOnly = false;
+      refs.clearLogsButton.classList.remove("hidden");
+      refs.logsInfoText.textContent =
+        "Admin users can view full diagnostics, error context, and remediation suggestions.";
       refs.importPolicyText.textContent =
         "Admin mode: import invoices for any project manager email that is detected in the PDF.";
       refs.importInvoiceButton.disabled = false;
     } else {
-      refs.tabLogsButton.classList.add("hidden");
+      refs.tabLogsButton.textContent = "Diagnostics (Admin)";
+      refs.tabLogsButton.classList.add("locked");
       refs.pmEmailInput.readOnly = true;
+      refs.clearLogsButton.classList.add("hidden");
+      refs.logsInfoText.textContent =
+        "Diagnostics details are admin-only. This tab still provides access guidance.";
       if (state.access.email) {
         refs.pmEmailInput.value = state.access.email;
         refs.importPolicyText.textContent =
@@ -342,10 +376,6 @@
   }
 
   function setActiveTab(tab) {
-    if (tab === "logs" && !state.access.isAdmin) {
-      tab = "invoices";
-    }
-
     state.activeTab = tab;
     const showInvoices = tab === "invoices";
 
@@ -462,7 +492,7 @@
       state.logs = state.logs.slice(0, LOG_LIMIT);
     }
     persistLogs();
-    if (state.access.isAdmin && refs.logsList) {
+    if (refs.logsList && state.activeTab === "logs") {
       renderLogs();
     }
   }
@@ -917,9 +947,16 @@
     if (!state.access.isAdmin) {
       refs.logsList.innerHTML = "";
       refs.logsEmptyState.classList.add("hidden");
+      refs.logsAccessNotice.classList.remove("hidden");
+      const detectedIdentity = state.access.email || state.access.displayName || "Unknown";
+      refs.logsAccessNotice.textContent =
+        "You are signed in as " +
+        detectedIdentity +
+        ". Full diagnostics are visible to admins only. Contact a workspace admin to review detailed error logs and solution suggestions.";
       return;
     }
 
+    refs.logsAccessNotice.classList.add("hidden");
     refs.logsList.innerHTML = "";
     if (!state.logs.length) {
       refs.logsEmptyState.classList.remove("hidden");

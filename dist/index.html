@@ -51,68 +51,12 @@
 
       <section id="tabInvoices" class="tab-panel">
         <main class="layout-grid">
-          <aside class="panel upload-panel">
-            <h2>Import PDF invoice</h2>
-            <p class="muted" id="importPolicyText">
-              Upload invoices and assign a project manager email.
-            </p>
-
-            <label class="control">
-              <span>Invoice PDF</span>
-              <input id="invoiceFileInput" type="file" accept="application/pdf,.pdf" />
-            </label>
-
-            <label class="control">
-              <span>Invoice title</span>
-              <input
-                id="invoiceTitleInput"
-                type="text"
-                maxlength="140"
-                placeholder="e.g. Feb 2026 Onboarding Services"
-              />
-            </label>
-
-            <label class="control">
-              <span>Project name</span>
-              <input
-                id="projectNameInput"
-                type="text"
-                maxlength="120"
-                placeholder="Project display name"
-              />
-            </label>
-
-            <label class="control">
-              <span>Project ID (optional)</span>
-              <input id="projectIdInput" type="text" maxlength="80" placeholder="Project ID" />
-            </label>
-
-            <label class="control">
-              <span>Project manager email</span>
-              <input
-                id="pmEmailInput"
-                type="email"
-                maxlength="160"
-                placeholder="pm@example.com"
-              />
-            </label>
-
-            <div>
-              <p class="tiny-label">Emails detected in PDF</p>
-              <div id="detectedEmails" class="chips"></div>
-            </div>
-
-            <button id="importInvoiceButton" class="btn btn-primary" type="button">
-              Import invoice
-            </button>
-            <p id="importStatus" class="status-text"></p>
-          </aside>
-
-          <section class="panel list-panel">
+          <section class="panel list-panel list-panel-wide">
             <div class="panel-header">
               <h2>Invoice library</h2>
-              <p id="invoiceStats" class="muted"></p>
+              <p id="invoiceStats" class="muted">Loading...</p>
             </div>
+            <p id="syncStatus" class="muted"></p>
 
             <label class="control">
               <span>Search</span>
@@ -125,37 +69,43 @@
 
             <p id="visibilitySummary" class="visibility-summary"></p>
 
-            <div id="invoiceList" class="invoice-list"></div>
+            <div class="table-wrap">
+              <table class="invoice-table" aria-label="Invoices table">
+                <thead>
+                  <tr>
+                    <th scope="col">Invoice #</th>
+                    <th scope="col">Invoice name</th>
+                    <th scope="col">PM / Expert Advisor</th>
+                    <th scope="col">Rocketlane account</th>
+                    <th scope="col">Invoice date</th>
+                  </tr>
+                </thead>
+                <tbody id="invoiceTableBody"></tbody>
+              </table>
+            </div>
             <div id="invoiceEmptyState" class="empty-state hidden">
               <h3>No invoices found</h3>
-              <p>Import a PDF invoice to get started.</p>
+              <p>No invoices were discovered in the source projects.</p>
             </div>
           </section>
 
-          <section class="panel viewer-panel">
-            <div id="viewerEmptyState" class="empty-state">
-              <h3>Select an invoice</h3>
-              <p>Choose an invoice on the left to preview the PDF.</p>
-            </div>
+          <aside class="panel context-panel">
+            <h2>Source context</h2>
+            <p id="selectedInvoiceSummary" class="muted">
+              Click an invoice number to preview its PDF.
+            </p>
 
-            <div id="viewerPanel" class="viewer-content hidden">
-              <div class="viewer-header">
-                <div>
-                  <h3 id="viewerTitle">Invoice</h3>
-                  <p id="viewerMeta" class="muted"></p>
-                </div>
-                <button id="openInNewTabButton" class="btn btn-subtle" type="button">
-                  Open in new tab
-                </button>
-              </div>
-              <iframe
-                id="pdfViewerFrame"
-                class="pdf-frame"
-                title="Invoice PDF preview"
-                loading="lazy"
-              ></iframe>
-            </div>
-          </section>
+            <dl class="context-list">
+              <dt>Source projects</dt>
+              <dd id="sourceProjectsText">Loading source projects...</dd>
+
+              <dt>Access model</dt>
+              <dd>
+                Admins see all invoices. Non-admin users only see invoices where their sign-in email
+                is associated with the invoice.
+              </dd>
+            </dl>
+          </aside>
         </main>
       </section>
 
@@ -178,6 +128,16 @@
           </div>
         </section>
       </section>
+    </div>
+
+    <div id="pdfModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+        <header class="modal-header">
+          <h3 id="modalTitle">Invoice preview</h3>
+          <button id="closeModalButton" class="btn btn-subtle" type="button">Close</button>
+        </header>
+        <iframe id="modalPdfFrame" class="modal-pdf-frame" title="Invoice PDF preview"></iframe>
+      </div>
     </div>
 
     <script src="./app.js"></script>

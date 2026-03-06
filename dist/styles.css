@@ -300,6 +300,12 @@ input:focus {
   font-weight: 700;
 }
 
+.invoice-link.disabled {
+  color: #7a89b1;
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
 .empty-state {
   text-align: center;
   margin: 1.1rem auto 0.55rem;
@@ -449,6 +455,53 @@ input:focus {
   border: 0;
   background: #f6f9ff;
   border-radius: 0 0 14px 14px;
+}
+
+.modal-invoice-preview {
+  padding: 0.9rem;
+  overflow: auto;
+  max-height: 76vh;
+  color: #24325b;
+}
+
+.modal-preview-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.modal-preview-row {
+  font-size: 0.85rem;
+}
+
+.modal-preview-row strong {
+  color: #344a87;
+}
+
+.modal-preview-section-title {
+  margin: 0.8rem 0 0.5rem;
+  font-weight: 700;
+  color: #2b4587;
+}
+
+.modal-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid #dbe4fb;
+}
+
+.modal-preview-table th,
+.modal-preview-table td {
+  text-align: left;
+  border-bottom: 1px solid #edf2ff;
+  padding: 0.5rem;
+  font-size: 0.82rem;
+}
+
+.modal-preview-table th {
+  background: #f3f7ff;
+  color: #2c468b;
 }
 
 @media (max-width: 1220px) {

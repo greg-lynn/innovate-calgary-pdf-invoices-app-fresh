@@ -1,3 +1,5 @@
+const { syncInvoicesFromSource } = require("./server-actions/sync-invoices-from-source");
+
 const widgets = [
   {
     identifier: "invoice-access-manager",
@@ -15,7 +17,15 @@ const widgets = [
 module.exports = {
   version: "1.0.0",
   widgets,
-  serverActions: [],
+  serverActions: [
+    {
+      name: "syncInvoicesFromSource",
+      description:
+        "Fetch source projects, invoices, and team members from Rocketlane APIs.",
+      run: syncInvoicesFromSource,
+      triggers: ["FE"],
+    },
+  ],
   eventHandlers: {},
   scheduledActions: [],
 };

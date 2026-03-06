@@ -4,12 +4,6 @@ A Rocketlane custom app for importing PDF invoices and enforcing role-aware visi
 
 This implementation is built around Rocketlane custom app patterns (`window.rliSdk.init`, `client.data.get`) and supports administrator and restricted-user flows in a single UI.
 
-## Install package (ready to upload)
-
-If Rocketlane's installer expects an RLI-built package (`deploy.json` inside `rli-dist`), upload:
-
-- `rocketlane-invoice-access-manager-rli-app.zip`
-
 ## Core capabilities
 
 - Import PDF invoices directly inside the custom app.

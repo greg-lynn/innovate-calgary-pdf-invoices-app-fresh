@@ -6,7 +6,7 @@
     <title>Invoice Access Manager</title>
     <link rel="stylesheet" href="./styles.css" />
     <script src="<%= rocketlaneSdk %>" id="rocketlane-sdk"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="./pdf.min.js"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -63,9 +63,12 @@
               <input
                 id="searchInput"
                 type="search"
-                placeholder="Search by invoice title, project, or email..."
+                placeholder="Search by status, invoice #, amount, account, or date..."
               />
             </label>
+            <p id="searchInsight" class="muted">
+              Search runs across invoices in source projects and updates as you type.
+            </p>
 
             <p id="visibilitySummary" class="visibility-summary"></p>
 
@@ -73,11 +76,12 @@
               <table class="invoice-table" aria-label="Invoices table">
                 <thead>
                   <tr>
-                    <th scope="col">Invoice #</th>
-                    <th scope="col">Invoice name</th>
-                    <th scope="col">PM / Expert Advisor</th>
-                    <th scope="col">Rocketlane account</th>
-                    <th scope="col">Invoice date</th>
+                    <th scope="col">Invoice status</th>
+                    <th scope="col">Invoice Number</th>
+                    <th scope="col">Amount</th>
+                    <th scope="col">Account</th>
+                    <th scope="col">Issue Date</th>
+                    <th scope="col">Due Date</th>
                   </tr>
                 </thead>
                 <tbody id="invoiceTableBody"></tbody>
@@ -102,7 +106,7 @@
               <dt>Access model</dt>
               <dd>
                 Admins see all invoices. Non-admin users only see invoices where their sign-in email
-                is associated with the invoice.
+                or user identity is associated with the invoice.
               </dd>
             </dl>
           </aside>
@@ -137,6 +141,7 @@
           <button id="closeModalButton" class="btn btn-subtle" type="button">Close</button>
         </header>
         <iframe id="modalPdfFrame" class="modal-pdf-frame" title="Invoice PDF preview"></iframe>
+        <div id="modalInvoicePreview" class="modal-invoice-preview hidden"></div>
       </div>
     </div>
 

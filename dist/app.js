@@ -3228,6 +3228,19 @@
           // Keep export resilient even if preview detail lookup fails.
         }
       }
+      if (invoice.pdfUrl) {
+        try {
+          const pdfBlob = await fetchInvoicePdfBlob(invoice.pdfUrl);
+          if (pdfBlob) {
+            zip.file(
+              "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+              pdfBlob
+            );
+          }
+        } catch (_error) {
+          // Continue export even when PDF retrieval fails.
+        }
+      }
       zip.file(
         "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
         JSON.stringify(exportRecord, null, 2)
@@ -3255,6 +3268,17 @@
     window.setTimeout(() => {
       window.URL.revokeObjectURL(url);
     }, 500);
+  }
+
+  async function fetchInvoicePdfBlob(pdfUrl) {
+    const response = await fetch(pdfUrl, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return await response.blob();
   }
 
   function safeFileName(value) {

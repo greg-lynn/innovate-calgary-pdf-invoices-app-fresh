@@ -186,6 +186,10 @@ h1 {
   align-items: start;
 }
 
+.layout-grid.single-column {
+  grid-template-columns: 1fr;
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--surface-border);
@@ -241,6 +245,59 @@ input[type="search"] {
   background: #fff;
 }
 
+.filter-bar {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.filter-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.24rem;
+}
+
+.filter-control span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.filter-control select,
+.filter-control input {
+  border: 1px solid var(--surface-border);
+  border-radius: 10px;
+  min-height: 36px;
+  padding: 0 0.6rem;
+  background: #fff;
+}
+
+.export-bar {
+  display: grid;
+  grid-template-columns: minmax(190px, 260px) auto 1fr;
+  gap: 0.55rem;
+  align-items: end;
+}
+
+.export-control {
+  max-width: 280px;
+}
+
+.sort-button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.sort-button:hover {
+  text-decoration: underline;
+}
+
 input:focus {
   border-color: var(--brand);
   outline: 2px solid #cad3ff;
@@ -281,6 +338,10 @@ input:focus {
   color: #253259;
 }
 
+.invoice-table td.amount-cell {
+  white-space: nowrap;
+}
+
 .invoice-row:hover {
   background: #f8fbff;
 }
@@ -318,6 +379,14 @@ input:focus {
   color: var(--text);
 }
 
+.pagination-bar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.2rem;
+}
+
 .context-panel h2 {
   margin-bottom: 0.65rem;
 }
@@ -350,6 +419,11 @@ input:focus {
   cursor: pointer;
   padding: 0 0.85rem;
   font-weight: 600;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .btn-subtle {
@@ -508,6 +582,10 @@ input:focus {
   .layout-grid {
     grid-template-columns: 1fr;
   }
+
+  .filter-bar {
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+  }
 }
 
 @media (max-width: 860px) {
@@ -517,5 +595,13 @@ input:focus {
 
   .header-meta {
     justify-content: flex-start;
+  }
+
+  .filter-bar {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
+  .export-bar {
+    grid-template-columns: 1fr;
   }
 }

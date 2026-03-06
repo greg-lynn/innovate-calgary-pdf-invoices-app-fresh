@@ -50,7 +50,7 @@
       </section>
 
       <section id="tabInvoices" class="tab-panel">
-        <main class="layout-grid">
+        <main id="layoutGrid" class="layout-grid">
           <section class="panel list-panel list-panel-wide">
             <div class="panel-header">
               <h2>Invoice library</h2>
@@ -63,12 +63,71 @@
               <input
                 id="searchInput"
                 type="search"
-                placeholder="Search by status, invoice #, amount, account, or date..."
+                placeholder="Search by status, invoice #, project manager, amount, account, or date..."
               />
             </label>
             <p id="searchInsight" class="muted">
               Search runs across invoices in source projects and updates as you type.
             </p>
+            <section id="filterBar" class="filter-bar">
+              <label class="filter-control">
+                <span>Invoice status</span>
+                <select id="filterInvoiceStatus">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Invoice Number</span>
+                <input id="filterInvoiceNumber" type="search" placeholder="Any" />
+              </label>
+              <label class="filter-control">
+                <span>Project Manager</span>
+                <select id="filterProjectManager">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Amount</span>
+                <select id="filterAmount">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Account</span>
+                <select id="filterAccount">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Issue Date</span>
+                <select id="filterIssueDate">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Due Date</span>
+                <select id="filterDueDate">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <button id="clearFiltersButton" class="btn btn-subtle" type="button">
+                Clear filters
+              </button>
+            </section>
+            <section class="export-bar">
+              <label class="filter-control export-control">
+                <span>Download</span>
+                <select id="exportModeSelect">
+                  <option value="one">Selected invoice</option>
+                  <option value="all">All invoices</option>
+                  <option value="filtered">Filtered/search results</option>
+                </select>
+              </label>
+              <button id="downloadZipButton" class="btn btn-subtle" type="button">
+                Download ZIP
+              </button>
+              <p id="exportInsight" class="muted"></p>
+            </section>
 
             <p id="visibilitySummary" class="visibility-summary"></p>
 
@@ -76,12 +135,13 @@
               <table class="invoice-table" aria-label="Invoices table">
                 <thead>
                   <tr>
-                    <th scope="col">Invoice status</th>
-                    <th scope="col">Invoice Number</th>
-                    <th scope="col">Amount</th>
-                    <th scope="col">Account</th>
-                    <th scope="col">Issue Date</th>
-                    <th scope="col">Due Date</th>
+                    <th scope="col"><button class="sort-button" data-sort="invoiceStatus" type="button">Invoice status</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="invoiceNumber" type="button">Invoice Number</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="ownerName" type="button">Project Manager</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="amount" type="button">Amount</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="accountName" type="button">Account</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="issueDate" type="button">Issue Date</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="dueDate" type="button">Due Date</button></th>
                   </tr>
                 </thead>
                 <tbody id="invoiceTableBody"></tbody>
@@ -91,9 +151,14 @@
               <h3>No invoices found</h3>
               <p>No invoices were discovered in the source projects.</p>
             </div>
+            <div id="paginationBar" class="pagination-bar hidden">
+              <button id="paginationPrevButton" class="btn btn-subtle" type="button">Previous</button>
+              <span id="paginationInfo" class="muted"></span>
+              <button id="paginationNextButton" class="btn btn-subtle" type="button">Next</button>
+            </div>
           </section>
 
-          <aside class="panel context-panel">
+          <aside id="contextPanel" class="panel context-panel">
             <h2>Source context</h2>
             <p id="selectedInvoiceSummary" class="muted">
               Click an invoice number to preview its PDF.
@@ -145,6 +210,7 @@
       </div>
     </div>
 
+    <script src="./jszip.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -59,9 +59,24 @@
     searchServerCheckedQuery: "",
     searchServerMatchedCount: null,
     searchVerifyTimer: 0,
+    pageSize: 25,
+    currentPage: 1,
+    sortBy: "issueDate",
+    sortDirection: "desc",
+    filters: {
+      invoiceStatus: "",
+      invoiceNumber: "",
+      ownerName: "",
+      amount: "",
+      accountName: "",
+      issueDate: "",
+      dueDate: "",
+    },
     activeTab: "invoices",
     syncStatus: "Initializing...",
     invoicePreviewCache: {},
+    exportMode: "one",
+    exportInsight: "",
     access: {
       role: "non_admin",
       roleLabel: "Restricted",
@@ -136,15 +151,33 @@
     refs.tabLogsButton = document.getElementById("tabLogsButton");
     refs.tabInvoices = document.getElementById("tabInvoices");
     refs.tabLogs = document.getElementById("tabLogs");
+    refs.layoutGrid = document.getElementById("layoutGrid");
+    refs.contextPanel = document.getElementById("contextPanel");
     refs.syncStatus = document.getElementById("syncStatus");
     refs.searchInput = document.getElementById("searchInput");
     refs.visibilitySummary = document.getElementById("visibilitySummary");
     refs.searchInsight = document.getElementById("searchInsight");
+    refs.filterInvoiceStatus = document.getElementById("filterInvoiceStatus");
+    refs.filterInvoiceNumber = document.getElementById("filterInvoiceNumber");
+    refs.filterProjectManager = document.getElementById("filterProjectManager");
+    refs.filterAmount = document.getElementById("filterAmount");
+    refs.filterAccount = document.getElementById("filterAccount");
+    refs.filterIssueDate = document.getElementById("filterIssueDate");
+    refs.filterDueDate = document.getElementById("filterDueDate");
+    refs.clearFiltersButton = document.getElementById("clearFiltersButton");
+    refs.exportModeSelect = document.getElementById("exportModeSelect");
+    refs.downloadZipButton = document.getElementById("downloadZipButton");
+    refs.exportInsight = document.getElementById("exportInsight");
     refs.invoiceStats = document.getElementById("invoiceStats");
+    refs.sortButtons = Array.from(document.querySelectorAll(".sort-button"));
     refs.invoiceTableBody = document.getElementById("invoiceTableBody");
     refs.invoiceEmptyState = document.getElementById("invoiceEmptyState");
     refs.invoiceEmptyTitle = refs.invoiceEmptyState.querySelector("h3");
     refs.invoiceEmptyBody = refs.invoiceEmptyState.querySelector("p");
+    refs.paginationBar = document.getElementById("paginationBar");
+    refs.paginationPrevButton = document.getElementById("paginationPrevButton");
+    refs.paginationInfo = document.getElementById("paginationInfo");
+    refs.paginationNextButton = document.getElementById("paginationNextButton");
     refs.selectedInvoiceSummary = document.getElementById("selectedInvoiceSummary");
     refs.sourceProjectsText = document.getElementById("sourceProjectsText");
     refs.logsList = document.getElementById("logsList");
@@ -166,12 +199,19 @@
       state.searchQuery = String(event.target.value || "").trim().toLowerCase();
       state.searchServerCheckedQuery = "";
       state.searchServerMatchedCount = null;
+      state.currentPage = 1;
       ensureSelectedInvoice();
-      renderInvoiceTable();
-      renderInvoiceStats();
-      renderSelectedSummary();
-      renderSearchInsight();
+      renderAll();
       scheduleSearchVerification();
+    });
+    bindFilterEvents();
+    bindSortEvents();
+    refs.paginationPrevButton.addEventListener("click", () => changePage(-1));
+    refs.paginationNextButton.addEventListener("click", () => changePage(1));
+    refs.downloadZipButton.addEventListener("click", onDownloadZip);
+    refs.exportModeSelect.addEventListener("change", (event) => {
+      state.exportMode = String(event.target.value || "one");
+      renderExportInsight();
     });
     refs.clearLogsButton.addEventListener("click", onClearLogs);
     refs.closeModalButton.addEventListener("click", closePdfModal);
@@ -184,6 +224,50 @@
       if (event.key === "Escape") {
         closePdfModal();
       }
+    });
+  }
+
+  function bindFilterEvents() {
+    const handleFilterChange = () => {
+      state.filters.invoiceStatus = String(refs.filterInvoiceStatus.value || "");
+      state.filters.invoiceNumber = String(refs.filterInvoiceNumber.value || "")
+        .trim()
+        .toLowerCase();
+      state.filters.ownerName = String(refs.filterProjectManager.value || "");
+      state.filters.amount = String(refs.filterAmount.value || "");
+      state.filters.accountName = String(refs.filterAccount.value || "");
+      state.filters.issueDate = String(refs.filterIssueDate.value || "");
+      state.filters.dueDate = String(refs.filterDueDate.value || "");
+      state.currentPage = 1;
+      ensureSelectedInvoice();
+      renderAll();
+    };
+    refs.filterInvoiceStatus.addEventListener("change", handleFilterChange);
+    refs.filterInvoiceNumber.addEventListener("input", handleFilterChange);
+    refs.filterProjectManager.addEventListener("change", handleFilterChange);
+    refs.filterAmount.addEventListener("change", handleFilterChange);
+    refs.filterAccount.addEventListener("change", handleFilterChange);
+    refs.filterIssueDate.addEventListener("change", handleFilterChange);
+    refs.filterDueDate.addEventListener("change", handleFilterChange);
+    refs.clearFiltersButton.addEventListener("click", clearFilters);
+  }
+
+  function bindSortEvents() {
+    refs.sortButtons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const sortKey = String(button.getAttribute("data-sort") || "").trim();
+        if (!sortKey) {
+          return;
+        }
+        if (state.sortBy === sortKey) {
+          state.sortDirection = state.sortDirection === "asc" ? "desc" : "asc";
+        } else {
+          state.sortBy = sortKey;
+          state.sortDirection = defaultSortDirectionForColumn(sortKey);
+        }
+        state.currentPage = 1;
+        renderAll();
+      });
     });
   }
 
@@ -937,6 +1021,7 @@
     }
 
     state.invoices = invoices.map(normalizeInvoice).filter(Boolean);
+    state.currentPage = 1;
   }
 
   async function fetchInvoicesFromServerAction() {
@@ -2349,23 +2434,46 @@
   }
 
   function configureUiForAccess() {
-    refs.tabLogsButton.classList.remove("hidden");
     if (state.access.isAdmin) {
+      refs.tabLogsButton.classList.remove("hidden");
       refs.tabLogsButton.textContent = "Diagnostics";
       refs.tabLogsButton.classList.remove("locked");
       refs.clearLogsButton.classList.remove("hidden");
+      if (refs.contextPanel) {
+        refs.contextPanel.classList.remove("hidden");
+      }
+      if (refs.layoutGrid) {
+        refs.layoutGrid.classList.remove("single-column");
+      }
       refs.logsInfoText.textContent =
         "Admin users can view full diagnostics, error context, and remediation suggestions.";
     } else {
-      refs.tabLogsButton.textContent = "Diagnostics (Admin)";
-      refs.tabLogsButton.classList.add("locked");
+      refs.tabLogsButton.classList.add("hidden");
+      refs.tabLogsButton.classList.remove("active");
+      refs.tabLogsButton.setAttribute("aria-selected", "false");
       refs.clearLogsButton.classList.add("hidden");
+      if (refs.contextPanel) {
+        refs.contextPanel.classList.add("hidden");
+      }
+      if (refs.layoutGrid) {
+        refs.layoutGrid.classList.add("single-column");
+      }
+      if (state.activeTab === "logs") {
+        state.activeTab = "invoices";
+      }
+      refs.tabLogs.classList.add("hidden");
+      refs.tabInvoices.classList.remove("hidden");
+      refs.tabInvoicesButton.classList.add("active");
+      refs.tabInvoicesButton.setAttribute("aria-selected", "true");
       refs.logsInfoText.textContent =
         "Diagnostics details are admin-only. This tab still provides access guidance.";
     }
   }
 
   function setActiveTab(tab) {
+    if (tab === "logs" && !state.access.isAdmin) {
+      tab = "invoices";
+    }
     state.activeTab = tab;
     const showInvoices = tab === "invoices";
     refs.tabInvoicesButton.classList.toggle("active", showInvoices);
@@ -2385,9 +2493,13 @@
   function renderAll() {
     renderSyncStatus();
     renderVisibilitySummary();
+    renderFilterControls();
     renderSearchInsight();
+    renderSortHeaders();
     renderInvoiceStats();
     renderInvoiceTable();
+    renderPagination();
+    renderExportInsight();
     renderSelectedSummary();
     renderSourceProjects();
     renderLogs();
@@ -2415,25 +2527,30 @@
   }
 
   function renderInvoiceStats() {
-    const visible = getVisibleInvoices().length;
+    const matched = getVisibleInvoices();
+    const paged = getCurrentPageInvoices(matched);
     refs.invoiceStats.textContent =
-      visible + " visible / " + state.invoices.length + " total";
+      paged.length +
+      " shown / " +
+      matched.length +
+      " matched / " +
+      state.invoices.length +
+      " total";
   }
 
   function renderInvoiceTable() {
-    const visible = getVisibleInvoices();
+    const matched = getVisibleInvoices();
+    const visible = getCurrentPageInvoices(matched);
     refs.invoiceTableBody.innerHTML = "";
 
-    if (!visible.length) {
-      if (state.searchQuery) {
+    if (!matched.length) {
+      if (state.searchQuery || countActiveFilters() > 0) {
         if (refs.invoiceEmptyTitle) {
-          refs.invoiceEmptyTitle.textContent = "No invoices match this search";
+          refs.invoiceEmptyTitle.textContent = "No invoices match your search/filter";
         }
         if (refs.invoiceEmptyBody) {
           refs.invoiceEmptyBody.textContent =
-            'No invoices were found for "' +
-            state.searchQuery +
-            '" in the source projects. Try invoice number, status, amount, or account.';
+            "No invoices were found with the current filters. Try a different search input or clear filters.";
         }
       } else {
         if (refs.invoiceEmptyTitle) {
@@ -2480,7 +2597,11 @@
       statusCell.textContent = formatStatus(invoice.invoiceStatus);
 
       const amountCell = document.createElement("td");
+      amountCell.className = "amount-cell";
       amountCell.textContent = formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol);
+
+      const ownerCell = document.createElement("td");
+      ownerCell.textContent = invoice.ownerName || "Unassigned";
 
       const accountCell = document.createElement("td");
       accountCell.textContent = invoice.accountName;
@@ -2493,6 +2614,7 @@
 
       row.appendChild(statusCell);
       row.appendChild(numberCell);
+      row.appendChild(ownerCell);
       row.appendChild(amountCell);
       row.appendChild(accountCell);
       row.appendChild(issueDateCell);
@@ -2562,18 +2684,19 @@
     if (!refs.searchInsight) {
       return;
     }
-    const visibleCount = getVisibleInvoices().length;
+    const matchedCount = getVisibleInvoices().length;
     const totalCount = state.invoices.length;
-    if (!state.searchQuery) {
+    const activeFilterCount = countActiveFilters();
+    if (!state.searchQuery && activeFilterCount === 0) {
       refs.searchInsight.textContent =
-        "Search runs across invoices from source projects and updates instantly as you type.";
+        "Search and filters run across all invoice columns (status, number, project manager, amount, account, issue date, due date).";
       return;
     }
-    const queryText = '"' + state.searchQuery + '"';
-    if (visibleCount > 0) {
+    const queryText = state.searchQuery ? '"' + state.searchQuery + '"' : "current filters";
+    if (matchedCount > 0) {
       refs.searchInsight.textContent =
         "Showing " +
-        visibleCount +
+        matchedCount +
         " matching invoice(s) for " +
         queryText +
         " from " +
@@ -2581,19 +2704,192 @@
         " loaded invoice(s).";
       return;
     }
-    if (state.searchServerCheckedQuery === state.searchQuery) {
+    if (state.searchQuery && state.searchServerCheckedQuery === state.searchQuery) {
       refs.searchInsight.textContent =
         "No matches for " +
         queryText +
-        " in source projects. Server verified " +
+        ". Server verified " +
         (state.searchServerMatchedCount == null ? 0 : state.searchServerMatchedCount) +
-        " match(es).";
+        " match(es). Try a different search input.";
       return;
     }
-    refs.searchInsight.textContent =
-      "No local matches for " +
-      queryText +
-      ". Verifying against source projects...";
+    refs.searchInsight.textContent = state.searchQuery
+      ? "No local matches for " +
+        queryText +
+        ". Verifying against source projects..."
+      : "No invoices match the current filters. Try a different filter combination.";
+  }
+
+  function renderFilterControls() {
+    populateSelectOptions(refs.filterInvoiceStatus, uniqueFieldValues("invoiceStatus").map(formatStatus));
+    populateSelectOptions(refs.filterProjectManager, uniqueFieldValues("ownerName"));
+    populateSelectOptions(
+      refs.filterAmount,
+      uniqueFieldValues("amount").map((value) =>
+        formatAmount(Number(value || 0), "", "$")
+      )
+    );
+    populateSelectOptions(refs.filterAccount, uniqueFieldValues("accountName"));
+    populateSelectOptions(
+      refs.filterIssueDate,
+      uniqueFieldValues("issueDate", "invoiceDate").map((value) => formatDate(value))
+    );
+    populateSelectOptions(
+      refs.filterDueDate,
+      uniqueFieldValues("dueDate").map((value) => formatDate(value))
+    );
+    refs.filterInvoiceStatus.value = state.filters.invoiceStatus;
+    refs.filterInvoiceNumber.value = state.filters.invoiceNumber;
+    refs.filterProjectManager.value = state.filters.ownerName;
+    refs.filterAmount.value = state.filters.amount;
+    refs.filterAccount.value = state.filters.accountName;
+    refs.filterIssueDate.value = state.filters.issueDate;
+    refs.filterDueDate.value = state.filters.dueDate;
+  }
+
+  function uniqueFieldValues(primaryField, fallbackField) {
+    const scoped = getAccessibleInvoices();
+    const values = scoped
+      .map((invoice) => pickFirst(invoice[primaryField] || (fallbackField ? invoice[fallbackField] : "")))
+      .filter(Boolean);
+    return dedupeStrings(values).sort((a, b) => a.localeCompare(b));
+  }
+
+  function populateSelectOptions(selectRef, values) {
+    if (!selectRef) {
+      return;
+    }
+    const currentValue = String(selectRef.value || "");
+    const seen = new Set([""]);
+    const options = ['<option value="">All</option>'];
+    values.forEach((value) => {
+      const normalized = String(value || "").trim();
+      if (!normalized || seen.has(normalized)) {
+        return;
+      }
+      seen.add(normalized);
+      options.push(
+        '<option value="' + escapeHtml(normalized) + '">' + escapeHtml(normalized) + "</option>"
+      );
+    });
+    selectRef.innerHTML = options.join("");
+    if (currentValue && seen.has(currentValue)) {
+      selectRef.value = currentValue;
+    }
+  }
+
+  function countActiveFilters() {
+    return [
+      state.filters.invoiceStatus,
+      state.filters.invoiceNumber,
+      state.filters.ownerName,
+      state.filters.amount,
+      state.filters.accountName,
+      state.filters.issueDate,
+      state.filters.dueDate,
+    ].filter(Boolean).length;
+  }
+
+  function clearFilters() {
+    state.filters = {
+      invoiceStatus: "",
+      invoiceNumber: "",
+      ownerName: "",
+      amount: "",
+      accountName: "",
+      issueDate: "",
+      dueDate: "",
+    };
+    state.currentPage = 1;
+    ensureSelectedInvoice();
+    renderAll();
+  }
+
+  function renderSortHeaders() {
+    refs.sortButtons.forEach((button) => {
+      const key = String(button.getAttribute("data-sort") || "");
+      const label = String(button.textContent || "").replace(/\s*[↑↓]$/, "");
+      if (key === state.sortBy) {
+        button.textContent = label + (state.sortDirection === "asc" ? " ↑" : " ↓");
+      } else {
+        button.textContent = label;
+      }
+    });
+  }
+
+  function defaultSortDirectionForColumn(column) {
+    if (column === "issueDate" || column === "dueDate" || column === "amount") {
+      return "desc";
+    }
+    return "asc";
+  }
+
+  function renderPagination() {
+    const matched = getVisibleInvoices();
+    const totalPages = Math.max(1, Math.ceil(matched.length / state.pageSize));
+    if (state.currentPage > totalPages) {
+      state.currentPage = totalPages;
+    }
+    if (!matched.length || matched.length <= state.pageSize) {
+      refs.paginationBar.classList.add("hidden");
+      return;
+    }
+    refs.paginationBar.classList.remove("hidden");
+    refs.paginationInfo.textContent =
+      "Page " + state.currentPage + " of " + totalPages + " (" + matched.length + " matches)";
+    refs.paginationPrevButton.disabled = state.currentPage <= 1;
+    refs.paginationNextButton.disabled = state.currentPage >= totalPages;
+  }
+
+  function changePage(delta) {
+    const matched = getVisibleInvoices();
+    const totalPages = Math.max(1, Math.ceil(matched.length / state.pageSize));
+    const nextPage = Math.min(totalPages, Math.max(1, state.currentPage + delta));
+    if (nextPage === state.currentPage) {
+      return;
+    }
+    state.currentPage = nextPage;
+    ensureSelectedInvoice();
+    renderAll();
+  }
+
+  function getCurrentPageInvoices(visibleInvoices) {
+    const rows = Array.isArray(visibleInvoices) ? visibleInvoices : getVisibleInvoices();
+    if (!rows.length) {
+      return [];
+    }
+    const totalPages = Math.max(1, Math.ceil(rows.length / state.pageSize));
+    if (state.currentPage > totalPages) {
+      state.currentPage = totalPages;
+    }
+    const start = (state.currentPage - 1) * state.pageSize;
+    const end = start + state.pageSize;
+    return rows.slice(start, end);
+  }
+
+  function renderExportInsight() {
+    if (!refs.exportInsight) {
+      return;
+    }
+    const matched = getVisibleInvoices();
+    const one = getSelectedVisibleInvoice();
+    refs.downloadZipButton.disabled = false;
+    if (state.exportMode === "one") {
+      refs.exportInsight.textContent = one
+        ? "Will download selected invoice " + one.invoiceNumber + " as ZIP."
+        : "Select an invoice row to export one invoice.";
+      refs.downloadZipButton.disabled = !one;
+      return;
+    }
+    if (state.exportMode === "filtered") {
+      refs.exportInsight.textContent =
+        "Will download " + matched.length + " filtered/search invoice(s) as ZIP.";
+      refs.downloadZipButton.disabled = matched.length === 0;
+      return;
+    }
+    refs.exportInsight.textContent =
+      "Will download all " + getAccessibleInvoices().length + " accessible invoice(s) as ZIP.";
+    refs.downloadZipButton.disabled = getAccessibleInvoices().length === 0;
   }
 
   function scheduleSearchVerification() {
@@ -2855,54 +3151,233 @@
       .replace(/'/g, "&#39;");
   }
 
-  function getVisibleInvoices() {
-    let invoices = state.invoices.slice();
-
-    if (!state.access.isAdmin) {
-      const email = state.access.email;
-      const userId = String(state.context.userId || "").trim();
-      if (!email && !userId) {
-        return [];
+  async function onDownloadZip() {
+    const JSZipCtor = window.JSZip;
+    if (!JSZipCtor) {
+      appendLog(
+        "SOURCE_FETCH_FAILED",
+        "ZIP library missing. jszip.min.js did not load."
+      );
+      if (refs.exportInsight) {
+        refs.exportInsight.textContent =
+          "Unable to export: ZIP library unavailable.";
       }
-      invoices = invoices.filter(
-        (invoice) =>
-          (email && invoice.associatedEmails.includes(email)) ||
-          (userId && invoice.associatedUserIds.includes(userId))
+      return;
+    }
+    let invoicesToExport = [];
+    if (state.exportMode === "one") {
+      const selected = getSelectedVisibleInvoice() || getCurrentPageInvoices()[0];
+      invoicesToExport = selected ? [selected] : [];
+    } else if (state.exportMode === "filtered") {
+      invoicesToExport = getVisibleInvoices();
+    } else {
+      invoicesToExport = getAccessibleInvoices();
+    }
+    if (!invoicesToExport.length) {
+      refs.exportInsight.textContent =
+        "No invoices available for the selected export option.";
+      return;
+    }
+
+    refs.exportInsight.textContent = "Preparing ZIP export...";
+    const zip = new JSZipCtor();
+    const csvRows = [
+      [
+        "Invoice Status",
+        "Invoice Number",
+        "Project Manager",
+        "Amount",
+        "Account",
+        "Issue Date",
+        "Due Date",
+      ],
+    ];
+
+    for (let i = 0; i < invoicesToExport.length; i += 1) {
+      const invoice = invoicesToExport[i];
+      csvRows.push([
+        formatStatus(invoice.invoiceStatus),
+        invoice.invoiceNumber,
+        invoice.ownerName || "",
+        formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
+        invoice.accountName,
+        formatDate(invoice.issueDate || invoice.invoiceDate),
+        formatDate(invoice.dueDate),
+      ]);
+      const exportRecord = {
+        invoiceStatus: formatStatus(invoice.invoiceStatus),
+        invoiceNumber: invoice.invoiceNumber,
+        projectManager: invoice.ownerName || "",
+        amount: invoice.amount || 0,
+        currencyCode: invoice.currencyCode || "",
+        currencySymbol: invoice.currencySymbol || "",
+        account: invoice.accountName,
+        issueDate: invoice.issueDate || invoice.invoiceDate,
+        dueDate: invoice.dueDate || "",
+        sourceProjectName: invoice.sourceProjectName || "",
+        associatedEmails: invoice.associatedEmails || [],
+        associatedUserIds: invoice.associatedUserIds || [],
+      };
+      if (state.exportMode === "one") {
+        try {
+          const preview = await fetchInvoicePreviewFromServerAction(invoice);
+          if (preview) {
+            exportRecord.preview = preview;
+          }
+        } catch (_error) {
+          // Keep export resilient even if preview detail lookup fails.
+        }
+      }
+      zip.file(
+        "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
+        JSON.stringify(exportRecord, null, 2)
       );
     }
 
-    if (state.searchQuery) {
-      const search = state.searchQuery;
-      invoices = invoices.filter((invoice) => {
-        const haystack = (
-          invoice.invoiceStatus +
-          " " +
-          invoice.invoiceNumber +
-          " " +
-          invoice.invoiceName +
-          " " +
-          invoice.ownerName +
-          " " +
-          invoice.accountName +
-          " " +
-          invoice.issueDate +
-          " " +
-          invoice.dueDate +
-          " " +
-          String(invoice.amount || "") +
-          " " +
-          invoice.sourceProjectName +
-          " " +
-          invoice.associatedEmails.join(" ")
-        ).toLowerCase();
-        return haystack.includes(search);
-      });
-    }
+    zip.file("invoices.csv", toCsv(csvRows));
+    const modeLabel = state.exportMode === "one" ? "single" : state.exportMode;
+    const blob = await zip.generateAsync({ type: "blob" });
+    const fileName =
+      "invoice-export-" + modeLabel + "-" + new Date().toISOString().slice(0, 10) + ".zip";
+    downloadBlob(blob, fileName);
+    refs.exportInsight.textContent =
+      "Downloaded " + invoicesToExport.length + " invoice(s) to " + fileName + ".";
+  }
 
-    invoices.sort(
-      (a, b) => timestampValue(b.issueDate || b.invoiceDate) - timestampValue(a.issueDate || a.invoiceDate)
-    );
+  function downloadBlob(blob, fileName) {
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => {
+      window.URL.revokeObjectURL(url);
+    }, 500);
+  }
+
+  function safeFileName(value) {
+    return String(value || "invoice")
+      .replace(/[^a-z0-9._-]+/gi, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80);
+  }
+
+  function toCsv(rows) {
+    return rows
+      .map((row) =>
+        row
+          .map((cell) => {
+            const text = String(cell == null ? "" : cell);
+            if (/[",\n]/.test(text)) {
+              return '"' + text.replace(/"/g, '""') + '"';
+            }
+            return text;
+          })
+          .join(",")
+      )
+      .join("\n");
+  }
+
+  function getVisibleInvoices() {
+    let invoices = getAccessibleInvoices();
+    invoices = applySearchAndFilters(invoices);
+    invoices = sortInvoices(invoices, state.sortBy, state.sortDirection);
     return invoices;
+  }
+
+  function getAccessibleInvoices() {
+    let invoices = state.invoices.slice();
+    if (state.access.isAdmin) {
+      return invoices;
+    }
+    const email = state.access.email;
+    const userId = String(state.context.userId || "").trim();
+    if (!email && !userId) {
+      return [];
+    }
+    return invoices.filter(
+      (invoice) =>
+        (email && invoice.associatedEmails.includes(email)) ||
+        (userId && invoice.associatedUserIds.includes(userId))
+    );
+  }
+
+  function applySearchAndFilters(invoices) {
+    const query = String(state.searchQuery || "").trim().toLowerCase();
+    const filters = state.filters || {};
+    return invoices.filter((invoice) => {
+      const status = formatStatus(invoice.invoiceStatus);
+      const issueDateLabel = formatDate(invoice.issueDate || invoice.invoiceDate);
+      const dueDateLabel = formatDate(invoice.dueDate);
+      const amountLabel = formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol);
+      if (filters.invoiceStatus && status !== filters.invoiceStatus) {
+        return false;
+      }
+      if (filters.invoiceNumber && !String(invoice.invoiceNumber || "").toLowerCase().includes(filters.invoiceNumber)) {
+        return false;
+      }
+      if (filters.ownerName && String(invoice.ownerName || "") !== filters.ownerName) {
+        return false;
+      }
+      if (filters.amount && amountLabel !== filters.amount) {
+        return false;
+      }
+      if (filters.accountName && String(invoice.accountName || "") !== filters.accountName) {
+        return false;
+      }
+      if (filters.issueDate && issueDateLabel !== filters.issueDate) {
+        return false;
+      }
+      if (filters.dueDate && dueDateLabel !== filters.dueDate) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = (
+        status +
+        " " +
+        String(invoice.invoiceNumber || "") +
+        " " +
+        String(invoice.ownerName || "") +
+        " " +
+        amountLabel +
+        " " +
+        String(invoice.accountName || "") +
+        " " +
+        issueDateLabel +
+        " " +
+        dueDateLabel
+      ).toLowerCase();
+      return haystack.includes(query);
+    });
+  }
+
+  function sortInvoices(invoices, sortBy, sortDirection) {
+    const direction = sortDirection === "asc" ? 1 : -1;
+    const rows = invoices.slice();
+    rows.sort((a, b) => {
+      if (sortBy === "amount") {
+        return direction * ((Number(a.amount || 0) - Number(b.amount || 0)) || 0);
+      }
+      if (sortBy === "issueDate" || sortBy === "dueDate") {
+        const aTime = timestampValue(a[sortBy] || (sortBy === "issueDate" ? a.invoiceDate : ""));
+        const bTime = timestampValue(b[sortBy] || (sortBy === "issueDate" ? b.invoiceDate : ""));
+        return direction * (aTime - bTime);
+      }
+      const aText = String(a[sortBy] || "").toLowerCase();
+      const bText = String(b[sortBy] || "").toLowerCase();
+      if (aText < bText) {
+        return -1 * direction;
+      }
+      if (aText > bText) {
+        return 1 * direction;
+      }
+      return 0;
+    });
+    return rows;
   }
 
   function hasPermissionSignals(hint) {
@@ -2918,7 +3393,7 @@
   }
 
   function ensureSelectedInvoice() {
-    const visible = getVisibleInvoices();
+    const visible = getCurrentPageInvoices();
     if (!visible.length) {
       state.selectedInvoiceId = null;
       return;
@@ -2930,7 +3405,7 @@
   }
 
   function getSelectedVisibleInvoice() {
-    const visible = getVisibleInvoices();
+    const visible = getCurrentPageInvoices();
     return visible.find((invoice) => invoice.id === state.selectedInvoiceId) || null;
   }
 

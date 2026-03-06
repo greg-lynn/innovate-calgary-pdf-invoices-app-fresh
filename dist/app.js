@@ -59,6 +59,7 @@
     searchServerCheckedQuery: "",
     searchServerMatchedCount: null,
     searchVerifyTimer: 0,
+    isFilterPanelOpen: false,
     pageSize: 25,
     currentPage: 1,
     sortBy: "issueDate",
@@ -157,6 +158,8 @@
     refs.searchInput = document.getElementById("searchInput");
     refs.visibilitySummary = document.getElementById("visibilitySummary");
     refs.searchInsight = document.getElementById("searchInsight");
+    refs.filterBar = document.getElementById("filterBar");
+    refs.filterToggleButton = document.getElementById("filterToggleButton");
     refs.filterInvoiceStatus = document.getElementById("filterInvoiceStatus");
     refs.filterInvoiceNumber = document.getElementById("filterInvoiceNumber");
     refs.filterProjectManager = document.getElementById("filterProjectManager");
@@ -206,6 +209,7 @@
     });
     bindFilterEvents();
     bindSortEvents();
+    refs.filterToggleButton.addEventListener("click", toggleFilterPanel);
     refs.paginationPrevButton.addEventListener("click", () => changePage(-1));
     refs.paginationNextButton.addEventListener("click", () => changePage(1));
     refs.downloadZipButton.addEventListener("click", onDownloadZip);
@@ -2493,6 +2497,7 @@
   function renderAll() {
     renderSyncStatus();
     renderVisibilitySummary();
+    renderFilterPanelState();
     renderFilterControls();
     renderSearchInsight();
     renderSortHeaders();
@@ -2503,6 +2508,21 @@
     renderSelectedSummary();
     renderSourceProjects();
     renderLogs();
+  }
+
+  function toggleFilterPanel() {
+    state.isFilterPanelOpen = !state.isFilterPanelOpen;
+    renderFilterPanelState();
+  }
+
+  function renderFilterPanelState() {
+    if (!refs.filterBar || !refs.filterToggleButton) {
+      return;
+    }
+    refs.filterBar.classList.toggle("hidden", !state.isFilterPanelOpen);
+    refs.filterToggleButton.textContent = state.isFilterPanelOpen
+      ? "Hide filters"
+      : "Filter";
   }
 
   function renderSyncStatus() {
@@ -2664,10 +2684,10 @@
       refs.modalPdfFrame.setAttribute("src", invoice.pdfUrl);
       return;
     }
-    refs.modalPdfFrame.classList.add("hidden");
+    refs.modalInvoicePreview.classList.add("hidden");
+    refs.modalInvoicePreview.innerHTML = "";
+    refs.modalPdfFrame.classList.remove("hidden");
     refs.modalPdfFrame.removeAttribute("src");
-    refs.modalInvoicePreview.classList.remove("hidden");
-    renderInvoicePreviewContent(invoice, null, true);
     loadInvoicePreview(invoice);
   }
 
@@ -2723,12 +2743,14 @@
   function renderFilterControls() {
     populateSelectOptions(refs.filterInvoiceStatus, uniqueFieldValues("invoiceStatus").map(formatStatus));
     populateSelectOptions(refs.filterProjectManager, uniqueFieldValues("ownerName"));
-    populateSelectOptions(
-      refs.filterAmount,
-      uniqueFieldValues("amount").map((value) =>
-        formatAmount(Number(value || 0), "", "$")
-      )
-    );
+    const amountValues = dedupeStrings(
+      getAccessibleInvoices().map((invoice) => String(Number(invoice.amount || 0)))
+    )
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+      .map((value) => formatAmount(value, "", "$"));
+    populateSelectOptions(refs.filterAmount, amountValues);
     populateSelectOptions(refs.filterAccount, uniqueFieldValues("accountName"));
     populateSelectOptions(
       refs.filterIssueDate,
@@ -2970,17 +2992,40 @@
 
   async function loadInvoicePreview(invoice) {
     const cacheKey = String(invoice.id || invoice.invoiceId || invoice.invoiceNumber || "");
-    if (cacheKey && state.invoicePreviewCache[cacheKey]) {
-      renderInvoicePreviewContent(invoice, state.invoicePreviewCache[cacheKey], false);
-      return;
-    }
     try {
-      const preview = await fetchInvoicePreviewFromServerAction(invoice);
-      if (cacheKey && preview) {
-        state.invoicePreviewCache[cacheKey] = preview;
+      const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
+      if (cached && cached.pdfDataUrl) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        refs.modalPdfFrame.setAttribute("src", cached.pdfDataUrl);
+        return;
       }
-      renderInvoicePreviewContent(invoice, preview, false);
+      const preview =
+        (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
+      const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+      if (pdfDataUrl) {
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: preview || null,
+            pdfDataUrl,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        refs.modalPdfFrame.setAttribute("src", pdfDataUrl);
+        return;
+      }
+      refs.modalPdfFrame.classList.add("hidden");
+      refs.modalInvoicePreview.classList.remove("hidden");
+      renderInvoicePreviewContent(
+        invoice,
+        preview,
+        false,
+        "Unable to render invoice PDF. Showing structured details instead."
+      );
     } catch (_error) {
+      refs.modalPdfFrame.classList.add("hidden");
+      refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
         invoice,
         null,
@@ -2988,6 +3033,129 @@
         "Unable to load invoice preview details right now."
       );
     }
+  }
+
+  function createInvoicePdfDataUrl(invoice, preview) {
+    const previewData = preview || {};
+    const lines = [];
+    lines.push("Invoice " + (invoice.invoiceNumber || "Unknown"));
+    lines.push("Status: " + formatStatus(previewData.status || invoice.invoiceStatus));
+    lines.push(
+      "Project Manager: " + String(invoice.ownerName || previewData.ownerName || "Unassigned")
+    );
+    lines.push(
+      "Amount: " +
+        formatAmount(
+          previewData.amount != null ? previewData.amount : invoice.amount,
+          previewData.currencyCode || invoice.currencyCode,
+          previewData.currencySymbol || invoice.currencySymbol
+        )
+    );
+    lines.push("Account: " + String(previewData.accountName || invoice.accountName || ""));
+    lines.push(
+      "Issue Date: " +
+        formatDate(previewData.issueDate || invoice.issueDate || invoice.invoiceDate)
+    );
+    lines.push("Due Date: " + formatDate(previewData.dueDate || invoice.dueDate));
+    lines.push("");
+    lines.push("Line Items");
+    const lineItems = Array.isArray(previewData.lineItems) ? previewData.lineItems : [];
+    if (!lineItems.length) {
+      lines.push("- No line items returned");
+    } else {
+      lineItems.slice(0, 24).forEach((line, idx) => {
+        lines.push(
+          (idx + 1) +
+            ". " +
+            String(line.description || "Line item") +
+            " | Qty " +
+            String(line.quantity || 0) +
+            " | Amount " +
+            formatAmount(
+              line.amount || 0,
+              previewData.currencyCode || invoice.currencyCode,
+              previewData.currencySymbol || invoice.currencySymbol
+            )
+        );
+      });
+    }
+    lines.push("");
+    lines.push("Payments");
+    const payments = Array.isArray(previewData.payments) ? previewData.payments : [];
+    if (!payments.length) {
+      lines.push("- No payments returned");
+    } else {
+      payments.slice(0, 20).forEach((payment, idx) => {
+        lines.push(
+          (idx + 1) +
+            ". " +
+            String(payment.recordType || "Payment") +
+            " | " +
+            formatDate(payment.paymentDate) +
+            " | " +
+            formatAmount(
+              payment.amount || 0,
+              previewData.currencyCode || invoice.currencyCode,
+              previewData.currencySymbol || invoice.currencySymbol
+            )
+        );
+      });
+    }
+    return buildPdfDataUrlFromLines(lines);
+  }
+
+  function buildPdfDataUrlFromLines(lines) {
+    const safeLines = (Array.isArray(lines) ? lines : [])
+      .map((line) => String(line || "").replace(/[^\x20-\x7E]/g, "?"))
+      .slice(0, 42);
+    let y = 760;
+    const commands = safeLines
+      .map((line) => {
+        const cmd =
+          "BT /F1 11 Tf 40 " +
+          String(y) +
+          " Td (" +
+          escapePdfText(line) +
+          ") Tj ET";
+        y -= 16;
+        return cmd;
+      })
+      .join("\n");
+    const stream = commands || "BT /F1 11 Tf 40 760 Td (Invoice preview unavailable) Tj ET";
+    const objects = [
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+      "<< /Length " + String(stream.length) + " >>\nstream\n" + stream + "\nendstream",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ];
+    let pdf = "%PDF-1.4\n";
+    const offsets = [0];
+    for (let i = 0; i < objects.length; i += 1) {
+      offsets.push(pdf.length);
+      pdf += String(i + 1) + " 0 obj\n" + objects[i] + "\nendobj\n";
+    }
+    const xrefStart = pdf.length;
+    pdf += "xref\n0 " + String(objects.length + 1) + "\n";
+    pdf += "0000000000 65535 f \n";
+    for (let i = 1; i < offsets.length; i += 1) {
+      const offset = String(offsets[i]).padStart(10, "0");
+      pdf += offset + " 00000 n \n";
+    }
+    pdf +=
+      "trailer\n<< /Size " +
+      String(objects.length + 1) +
+      " /Root 1 0 R >>\nstartxref\n" +
+      String(xrefStart) +
+      "\n%%EOF";
+    return "data:application/pdf;base64," + window.btoa(pdf);
+  }
+
+  function escapePdfText(value) {
+    return String(value || "")
+      .replace(/\\/g, "\\\\")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)");
   }
 
   async function fetchInvoicePreviewFromServerAction(invoice) {

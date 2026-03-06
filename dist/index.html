@@ -69,7 +69,10 @@
             <p id="searchInsight" class="muted">
               Search runs across invoices in source projects and updates as you type.
             </p>
-            <section id="filterBar" class="filter-bar">
+            <div class="filter-toggle-row">
+              <button id="filterToggleButton" class="btn btn-subtle" type="button">Filter</button>
+            </div>
+            <section id="filterBar" class="filter-bar hidden">
               <label class="filter-control">
                 <span>Invoice status</span>
                 <select id="filterInvoiceStatus">

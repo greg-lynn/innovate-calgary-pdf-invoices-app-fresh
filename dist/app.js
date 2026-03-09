@@ -76,6 +76,7 @@
     activeTab: "invoices",
     syncStatus: "Initializing...",
     invoicePreviewCache: {},
+    selectedDownloadIds: new Set(),
     exportMode: "one",
     exportInsight: "",
     access: {
@@ -1025,6 +1026,12 @@
     }
 
     state.invoices = invoices.map(normalizeInvoice).filter(Boolean);
+    const validIds = new Set(state.invoices.map((invoice) => invoice.id));
+    state.selectedDownloadIds.forEach((id) => {
+      if (!validIds.has(id)) {
+        state.selectedDownloadIds.delete(id);
+      }
+    });
     state.currentPage = 1;
   }
 
@@ -2599,6 +2606,21 @@
         renderSelectedSummary();
       });
 
+      const selectCell = document.createElement("td");
+      selectCell.className = "select-cell";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "invoice-select-checkbox";
+      checkbox.checked = state.selectedDownloadIds.has(invoice.id);
+      checkbox.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      checkbox.addEventListener("change", (event) => {
+        const checked = Boolean(event.target.checked);
+        toggleInvoiceDownloadSelection(invoice.id, checked);
+      });
+      selectCell.appendChild(checkbox);
+
       const numberCell = document.createElement("td");
       const numberButton = document.createElement("button");
       numberButton.type = "button";
@@ -2632,6 +2654,7 @@
       const dueDateCell = document.createElement("td");
       dueDateCell.textContent = formatDate(invoice.dueDate);
 
+      row.appendChild(selectCell);
       row.appendChild(statusCell);
       row.appendChild(numberCell);
       row.appendChild(ownerCell);
@@ -2894,13 +2917,22 @@
       return;
     }
     const matched = getVisibleInvoices();
-    const one = getSelectedVisibleInvoice();
+    const selectedForDownload = getSelectedDownloadInvoices(matched);
     refs.downloadZipButton.disabled = false;
     if (state.exportMode === "one") {
-      refs.exportInsight.textContent = one
-        ? "Will download selected invoice " + one.invoiceNumber + " as ZIP."
-        : "Select an invoice row to export one invoice.";
-      refs.downloadZipButton.disabled = !one;
+      if (selectedForDownload.length === 1) {
+        refs.exportInsight.textContent =
+          "Will download selected invoice " +
+          selectedForDownload[0].invoiceNumber +
+          " as ZIP.";
+      } else if (selectedForDownload.length > 1) {
+        refs.exportInsight.textContent =
+          "Please select only one invoice checkbox for single-invoice download.";
+      } else {
+        refs.exportInsight.textContent =
+          "Select one invoice checkbox to export one invoice.";
+      }
+      refs.downloadZipButton.disabled = selectedForDownload.length !== 1;
       return;
     }
     if (state.exportMode === "filtered") {
@@ -3334,8 +3366,14 @@
     }
     let invoicesToExport = [];
     if (state.exportMode === "one") {
-      const selected = getSelectedVisibleInvoice() || getCurrentPageInvoices()[0];
-      invoicesToExport = selected ? [selected] : [];
+      invoicesToExport = getSelectedDownloadInvoices(getVisibleInvoices());
+      if (invoicesToExport.length !== 1) {
+        refs.exportInsight.textContent =
+          invoicesToExport.length > 1
+            ? "Please select exactly one invoice checkbox to download one invoice."
+            : "Please select one invoice checkbox to download one invoice.";
+        return;
+      }
     } else if (state.exportMode === "filtered") {
       invoicesToExport = getVisibleInvoices();
     } else {
@@ -3470,6 +3508,26 @@
           .join(",")
       )
       .join("\n");
+  }
+
+  function toggleInvoiceDownloadSelection(invoiceId, checked) {
+    const id = String(invoiceId || "");
+    if (!id) {
+      return;
+    }
+    if (checked) {
+      state.selectedDownloadIds.add(id);
+    } else {
+      state.selectedDownloadIds.delete(id);
+    }
+    renderExportInsight();
+  }
+
+  function getSelectedDownloadInvoices(candidateInvoices) {
+    const rows = Array.isArray(candidateInvoices)
+      ? candidateInvoices
+      : getVisibleInvoices();
+    return rows.filter((invoice) => state.selectedDownloadIds.has(invoice.id));
   }
 
   function getVisibleInvoices() {

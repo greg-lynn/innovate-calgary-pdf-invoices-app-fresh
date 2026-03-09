@@ -349,6 +349,18 @@ input:focus {
   color: #253259;
 }
 
+.invoice-table td.select-cell,
+.invoice-table thead th:first-child {
+  width: 66px;
+  min-width: 66px;
+}
+
+.invoice-select-checkbox {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
 .invoice-table td.amount-cell {
   white-space: nowrap;
 }

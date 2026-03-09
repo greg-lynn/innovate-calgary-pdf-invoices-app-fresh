@@ -77,7 +77,7 @@
     syncStatus: "Initializing...",
     invoicePreviewCache: {},
     selectedDownloadIds: new Set(),
-    exportMode: "one",
+    exportMode: "selected",
     exportInsight: "",
     access: {
       role: "non_admin",
@@ -215,7 +215,7 @@
     refs.paginationNextButton.addEventListener("click", () => changePage(1));
     refs.downloadZipButton.addEventListener("click", onDownloadZip);
     refs.exportModeSelect.addEventListener("change", (event) => {
-      state.exportMode = String(event.target.value || "one");
+      state.exportMode = String(event.target.value || "selected");
       renderExportInsight();
     });
     refs.clearLogsButton.addEventListener("click", onClearLogs);
@@ -2919,20 +2919,21 @@
     const matched = getVisibleInvoices();
     const selectedForDownload = getSelectedDownloadInvoices(matched);
     refs.downloadZipButton.disabled = false;
-    if (state.exportMode === "one") {
-      if (selectedForDownload.length === 1) {
+    if (state.exportMode === "selected") {
+      if (selectedForDownload.length >= 1) {
         refs.exportInsight.textContent =
-          "Will download selected invoice " +
-          selectedForDownload[0].invoiceNumber +
+          "Will download " +
+          selectedForDownload.length +
+          " selected invoice(s)" +
+          (selectedForDownload.length === 1
+            ? " (" + selectedForDownload[0].invoiceNumber + ")"
+            : "") +
           " as ZIP.";
-      } else if (selectedForDownload.length > 1) {
-        refs.exportInsight.textContent =
-          "Please select only one invoice checkbox for single-invoice download.";
       } else {
         refs.exportInsight.textContent =
-          "Select one invoice checkbox to export one invoice.";
+          "Select one or more invoice checkboxes to export selected invoices.";
       }
-      refs.downloadZipButton.disabled = selectedForDownload.length !== 1;
+      refs.downloadZipButton.disabled = selectedForDownload.length < 1;
       return;
     }
     if (state.exportMode === "filtered") {
@@ -3365,13 +3366,11 @@
       return;
     }
     let invoicesToExport = [];
-    if (state.exportMode === "one") {
+    if (state.exportMode === "selected") {
       invoicesToExport = getSelectedDownloadInvoices(getVisibleInvoices());
-      if (invoicesToExport.length !== 1) {
+      if (invoicesToExport.length < 1) {
         refs.exportInsight.textContent =
-          invoicesToExport.length > 1
-            ? "Please select exactly one invoice checkbox to download one invoice."
-            : "Please select one invoice checkbox to download one invoice.";
+          "Please select one or more invoice checkboxes to download selected invoices.";
         return;
       }
     } else if (state.exportMode === "filtered") {
@@ -3424,7 +3423,7 @@
         associatedEmails: invoice.associatedEmails || [],
         associatedUserIds: invoice.associatedUserIds || [],
       };
-      if (state.exportMode === "one") {
+      if (state.exportMode === "selected" && invoicesToExport.length === 1) {
         try {
           const preview = await fetchInvoicePreviewFromServerAction(invoice);
           if (preview) {
@@ -3454,7 +3453,7 @@
     }
 
     zip.file("invoices.csv", toCsv(csvRows));
-    const modeLabel = state.exportMode === "one" ? "single" : state.exportMode;
+    const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
     const blob = await zip.generateAsync({ type: "blob" });
     const fileName =
       "invoice-export-" + modeLabel + "-" + new Date().toISOString().slice(0, 10) + ".zip";

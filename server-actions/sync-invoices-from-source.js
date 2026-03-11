@@ -478,6 +478,13 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
 
 function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
   const invoiceNumber = pickFirst(invoiceRecord && invoiceRecord.invoiceNumber);
+  const projectName = pickFirst(
+    invoiceRecord &&
+      Array.isArray(invoiceRecord.projects) &&
+      invoiceRecord.projects[0] &&
+      (invoiceRecord.projects[0].projectName || invoiceRecord.projects[0].name)
+  );
+  const createdBy = invoiceRecord && invoiceRecord.createdBy ? invoiceRecord.createdBy : null;
   return {
     invoiceId: pickFirst(invoiceRecord && (invoiceRecord.invoiceId || invoiceRecord.id || invoiceRecord._id)),
     invoiceNumber,
@@ -500,6 +507,17 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
         (invoiceRecord.accountName ||
           invoiceRecord.companyName ||
           (invoiceRecord.company && (invoiceRecord.company.companyName || invoiceRecord.company.name)))
+    ),
+    projectName,
+    fromName: pickFirst(
+      invoiceRecord &&
+        (invoiceRecord.workspaceName ||
+          invoiceRecord.accountName ||
+          (invoiceRecord.company && (invoiceRecord.company.workspaceName || invoiceRecord.company.companyName)))
+    ),
+    billToName: fullName(createdBy),
+    billToEmail: normalizeEmail(
+      pickFirst(createdBy && (createdBy.email || createdBy.emailId || createdBy.userEmail))
     ),
     lineItems: Array.isArray(lineRecords)
       ? lineRecords.map((line) => ({

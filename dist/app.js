@@ -2682,7 +2682,7 @@
       formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol) +
       " · " +
       formatDate(invoice.issueDate || invoice.invoiceDate) +
-      (invoice.pdfUrl ? "" : " · showing invoice details preview");
+      " · PDF preview available";
   }
 
   function renderSourceProjects() {
@@ -3070,97 +3070,146 @@
 
   function createInvoicePdfDataUrl(invoice, preview) {
     const previewData = preview || {};
-    const lines = [];
-    lines.push("Invoice " + (invoice.invoiceNumber || "Unknown"));
-    lines.push("Status: " + formatStatus(previewData.status || invoice.invoiceStatus));
-    lines.push(
-      "Project Manager: " + String(invoice.ownerName || previewData.ownerName || "Unassigned")
-    );
-    lines.push(
-      "Amount: " +
-        formatAmount(
-          previewData.amount != null ? previewData.amount : invoice.amount,
-          previewData.currencyCode || invoice.currencyCode,
-          previewData.currencySymbol || invoice.currencySymbol
-        )
-    );
-    lines.push("Account: " + String(previewData.accountName || invoice.accountName || ""));
-    lines.push(
-      "Issue Date: " +
-        formatDate(previewData.issueDate || invoice.issueDate || invoice.invoiceDate)
-    );
-    lines.push("Due Date: " + formatDate(previewData.dueDate || invoice.dueDate));
-    lines.push("");
-    lines.push("Line Items");
     const lineItems = Array.isArray(previewData.lineItems) ? previewData.lineItems : [];
-    if (!lineItems.length) {
-      lines.push("- No line items returned");
-    } else {
-      lineItems.slice(0, 24).forEach((line, idx) => {
-        lines.push(
-          (idx + 1) +
-            ". " +
-            String(line.description || "Line item") +
-            " | Qty " +
-            String(line.quantity || 0) +
-            " | Amount " +
-            formatAmount(
-              line.amount || 0,
-              previewData.currencyCode || invoice.currencyCode,
-              previewData.currencySymbol || invoice.currencySymbol
-            )
-        );
-      });
-    }
-    lines.push("");
-    lines.push("Payments");
     const payments = Array.isArray(previewData.payments) ? previewData.payments : [];
-    if (!payments.length) {
-      lines.push("- No payments returned");
-    } else {
-      payments.slice(0, 20).forEach((payment, idx) => {
-        lines.push(
-          (idx + 1) +
-            ". " +
-            String(payment.recordType || "Payment") +
-            " | " +
-            formatDate(payment.paymentDate) +
-            " | " +
-            formatAmount(
-              payment.amount || 0,
-              previewData.currencyCode || invoice.currencyCode,
-              previewData.currencySymbol || invoice.currencySymbol
-            )
-        );
-      });
-    }
-    return buildPdfDataUrlFromLines(lines);
-  }
+    const currencyCode = String(
+      previewData.currencyCode || invoice.currencyCode || "USD"
+    ).toUpperCase();
+    const issueDate = previewData.issueDate || invoice.issueDate || invoice.invoiceDate;
+    const dueDate = previewData.dueDate || invoice.dueDate;
+    const accountName = previewData.accountName || invoice.accountName || "Invoice Inc.";
+    const projectName =
+      previewData.projectName || invoice.sourceProjectName || "Expert Advisor Program Invoices";
+    const pmName = invoice.ownerName || "Unassigned";
+    const subtotal = lineItems.length
+      ? lineItems.reduce((sum, line) => sum + Number(line.amount || 0), 0)
+      : Number(previewData.amount != null ? previewData.amount : invoice.amount || 0);
+    const paidAmount = payments.reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+    const amountDue = Math.max(0, subtotal - paidAmount);
 
-  function buildPdfDataUrlFromLines(lines) {
-    const safeLines = (Array.isArray(lines) ? lines : [])
-      .map((line) => String(line || "").replace(/[^\x20-\x7E]/g, "?"))
-      .slice(0, 42);
-    let y = 760;
-    const commands = safeLines
-      .map((line) => {
-        const cmd =
-          "BT /F1 11 Tf 40 " +
+    const commands = [];
+    const addText = (text, x, y, size, bold) => {
+      const font = bold ? "F2" : "F1";
+      commands.push(
+        "BT /" +
+          font +
+          " " +
+          String(size) +
+          " Tf " +
+          String(x) +
+          " " +
           String(y) +
           " Td (" +
-          escapePdfText(line) +
-          ") Tj ET";
-        y -= 16;
-        return cmd;
-      })
-      .join("\n");
-    const stream = commands || "BT /F1 11 Tf 40 760 Td (Invoice preview unavailable) Tj ET";
+          escapePdfText(String(text || "")) +
+          ") Tj ET"
+      );
+    };
+    const addLine = (x1, y1, x2, y2) => {
+      commands.push(
+        String(x1) +
+          " " +
+          String(y1) +
+          " m " +
+          String(x2) +
+          " " +
+          String(y2) +
+          " l S"
+      );
+    };
+
+    commands.push("0.95 G 0.5 w");
+    addText("Invoice", 60, 740, 18, true);
+    addText("Invoice number", 60, 704, 10, true);
+    addText(invoice.invoiceNumber || "Unknown", 185, 704, 10, false);
+    addText("Date of issue", 60, 688, 10, true);
+    addText(formatPdfDate(issueDate), 185, 688, 10, false);
+    addText("Due date", 60, 672, 10, true);
+    addText(formatPdfDate(dueDate), 185, 672, 10, false);
+
+    addText(previewData.fromName || state.context.accountName || "blink", 60, 625, 14, true);
+    addText("Bill to", 340, 625, 12, true);
+    addText(previewData.billToName || pmName, 340, 609, 11, false);
+    addText(accountName, 340, 593, 11, false);
+    if (previewData.billToEmail || invoice.associatedEmails[0]) {
+      addText(previewData.billToEmail || invoice.associatedEmails[0], 340, 577, 11, false);
+    }
+
+    addText(
+      formatPdfCurrency(amountDue, currencyCode) + " due " + formatPdfDate(dueDate),
+      60,
+      535,
+      14,
+      true
+    );
+
+    addText(projectName, 60, 495, 14, true);
+    addText("Description", 60, 468, 10, false);
+    addText("Qty", 300, 468, 10, false);
+    addText("Unit price", 390, 468, 10, false);
+    addText("Amount", 530, 468, 10, false);
+    addLine(60, 456, 552, 456);
+
+    let y = 430;
+    const tableRows = lineItems.length
+      ? lineItems
+      : [
+          {
+            description: "Invoice item",
+            quantity: 1,
+            unitPrice: subtotal,
+            amount: subtotal,
+          },
+        ];
+    tableRows.slice(0, 7).forEach((line) => {
+      const desc = splitPdfLine(String(line.description || "Line item"), 36);
+      addText(desc[0], 60, y, 11, false);
+      if (desc[1]) {
+        addText(desc[1], 60, y - 14, 11, false);
+      }
+      addText(String(Number(line.quantity || 0).toFixed(2)), 295, y, 11, false);
+      addText(formatPdfCurrency(Number(line.unitPrice || 0), currencyCode), 375, y, 11, false);
+      addText(formatPdfCurrency(Number(line.amount || 0), currencyCode), 500, y, 11, false);
+      addLine(60, y - 22, 552, y - 22);
+      y -= 44;
+    });
+
+    const summaryTop = Math.max(y - 8, 220);
+    addText("Total", 340, summaryTop, 12, false);
+    addText(formatPdfCurrency(subtotal, currencyCode), 500, summaryTop, 12, false);
+    addLine(338, summaryTop - 8, 552, summaryTop - 8);
+    addText("Payments", 340, summaryTop - 32, 12, false);
+    addText("- " + formatPdfCurrency(paidAmount, currencyCode), 500, summaryTop - 32, 12, false);
+    addLine(338, summaryTop - 40, 552, summaryTop - 40);
+    addText("Amount due", 340, summaryTop - 64, 13, true);
+    addText(formatPdfCurrency(amountDue, currencyCode), 500, summaryTop - 64, 13, true);
+
+    const paymentDate = payments[0] ? formatPdfDate(payments[0].paymentDate) : formatPdfDate(issueDate);
+    addText("PAYMENTS", 60, 95, 12, true);
+    addText(
+      formatPdfCurrency(paidAmount, currencyCode) +
+        " was paid on " +
+        paymentDate,
+      60,
+      78,
+      11,
+      true
+    );
+
+    return buildPdfDataUrlFromCommands(commands);
+  }
+
+  function buildPdfDataUrlFromCommands(commands) {
+    const stream =
+      (Array.isArray(commands) && commands.length
+        ? commands.join("\n")
+        : "BT /F1 11 Tf 40 760 Td (Invoice preview unavailable) Tj ET") + "\n";
     const objects = [
       "<< /Type /Catalog /Pages 2 0 R >>",
       "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
-      "<< /Length " + String(stream.length) + " >>\nstream\n" + stream + "\nendstream",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> >>",
+      "<< /Length " + String(stream.length) + " >>\nstream\n" + stream + "endstream",
       "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>",
     ];
     let pdf = "%PDF-1.4\n";
     const offsets = [0];
@@ -3189,6 +3238,43 @@
       .replace(/\\/g, "\\\\")
       .replace(/\(/g, "\\(")
       .replace(/\)/g, "\\)");
+  }
+
+  function splitPdfLine(text, maxLen) {
+    const value = String(text || "").replace(/\s+/g, " ").trim();
+    if (!value) {
+      return [""];
+    }
+    if (value.length <= maxLen) {
+      return [value];
+    }
+    const slice = value.slice(0, maxLen);
+    const splitAt = slice.lastIndexOf(" ");
+    if (splitAt <= 10) {
+      return [slice, value.slice(maxLen).trim()];
+    }
+    return [value.slice(0, splitAt).trim(), value.slice(splitAt + 1).trim()];
+  }
+
+  function formatPdfDate(value) {
+    const timestamp = new Date(value).getTime();
+    if (Number.isNaN(timestamp)) {
+      return "Unknown";
+    }
+    return new Date(timestamp).toLocaleDateString([], {
+      year: "numeric",
+      month: "long",
+      day: "2-digit",
+    });
+  }
+
+  function formatPdfCurrency(amount, code) {
+    const numeric = Number(amount || 0);
+    const safe = Number.isFinite(numeric) ? numeric : 0;
+    return String(code || "USD").toUpperCase() + " " + safe.toLocaleString([], {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
   }
 
   async function fetchInvoicePreviewFromServerAction(invoice) {
@@ -3400,6 +3486,12 @@
 
     for (let i = 0; i < invoicesToExport.length; i += 1) {
       const invoice = invoicesToExport[i];
+      let preview = null;
+      try {
+        preview = await fetchInvoicePreviewFromServerAction(invoice);
+      } catch (_error) {
+        preview = null;
+      }
       csvRows.push([
         formatStatus(invoice.invoiceStatus),
         invoice.invoiceNumber,
@@ -3423,28 +3515,16 @@
         associatedEmails: invoice.associatedEmails || [],
         associatedUserIds: invoice.associatedUserIds || [],
       };
-      if (state.exportMode === "selected" && invoicesToExport.length === 1) {
-        try {
-          const preview = await fetchInvoicePreviewFromServerAction(invoice);
-          if (preview) {
-            exportRecord.preview = preview;
-          }
-        } catch (_error) {
-          // Keep export resilient even if preview detail lookup fails.
-        }
+      if (preview) {
+        exportRecord.preview = preview;
       }
-      if (invoice.pdfUrl) {
-        try {
-          const pdfBlob = await fetchInvoicePdfBlob(invoice.pdfUrl);
-          if (pdfBlob) {
-            zip.file(
-              "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-              pdfBlob
-            );
-          }
-        } catch (_error) {
-          // Continue export even when PDF retrieval fails.
-        }
+      const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+      const pdfBytes = pdfDataUrlToBytes(pdfDataUrl);
+      if (pdfBytes) {
+        zip.file(
+          "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+          pdfBytes
+        );
       }
       zip.file(
         "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
@@ -3475,15 +3555,24 @@
     }, 500);
   }
 
-  async function fetchInvoicePdfBlob(pdfUrl) {
-    const response = await fetch(pdfUrl, {
-      method: "GET",
-      credentials: "include",
-    });
-    if (!response.ok) {
+  function pdfDataUrlToBytes(dataUrl) {
+    const text = String(dataUrl || "");
+    const marker = "base64,";
+    const idx = text.indexOf(marker);
+    if (idx < 0) {
       return null;
     }
-    return await response.blob();
+    try {
+      const encoded = text.slice(idx + marker.length);
+      const binary = window.atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return bytes;
+    } catch (_error) {
+      return null;
+    }
   }
 
   function safeFileName(value) {

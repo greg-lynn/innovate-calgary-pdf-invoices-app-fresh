@@ -472,6 +472,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     pdfUrl,
     associatedEmails: dedupeStrings(associatedEmails.concat(projectEmails)),
     associatedUserIds: dedupeStrings(associatedUserIds.concat(projectUserIds)),
+    sourceProjectId: project.id || "",
     sourceProjectName: project.name,
   };
 }

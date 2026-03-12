@@ -2214,6 +2214,7 @@
       pdfUrl,
       associatedEmails,
       associatedUserIds,
+      sourceProjectId: project.id || "",
       sourceProjectName: project.name,
     });
   }
@@ -2323,6 +2324,7 @@
       pdfUrl,
       associatedEmails: dedupeEmails(invoice.associatedEmails || []),
       associatedUserIds: dedupeStrings(invoice.associatedUserIds || []),
+      sourceProjectId: String(invoice.sourceProjectId || "").trim(),
       sourceProjectName: String(invoice.sourceProjectName || "").trim(),
     };
   }
@@ -2707,6 +2709,14 @@
       refs.modalPdfFrame.setAttribute("src", invoice.pdfUrl);
       return;
     }
+    const nativePreviewUrl = resolveNativeInvoicePreviewUrl(invoice);
+    if (nativePreviewUrl) {
+      refs.modalInvoicePreview.classList.add("hidden");
+      refs.modalInvoicePreview.innerHTML = "";
+      refs.modalPdfFrame.classList.remove("hidden");
+      refs.modalPdfFrame.setAttribute("src", nativePreviewUrl);
+      return;
+    }
     refs.modalInvoicePreview.classList.add("hidden");
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
@@ -2985,21 +2995,7 @@
     ) {
       return null;
     }
-    const workspaceCandidates = [
-      "https://blink.rocketlane.com",
-      "https://innovate-calgary.rocketlane.com",
-    ];
-    const accountDomain = pickFirst(
-      state.rawAccount &&
-        (state.rawAccount.domainName ||
-          state.rawAccount.primaryDomainName ||
-          state.rawAccount.domain)
-    );
-    if (accountDomain) {
-      workspaceCandidates.unshift(
-        "https://" + accountDomain.replace(/^https?:\/\//i, "")
-      );
-    }
+    const workspaceCandidates = getWorkspaceCandidates();
     try {
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
@@ -3065,6 +3061,96 @@
         false,
         "Unable to load invoice preview details right now."
       );
+    }
+  }
+
+  function getWorkspaceCandidates() {
+    const candidates = [
+      "https://blink.rocketlane.com",
+      "https://innovate-calgary.rocketlane.com",
+    ];
+    const accountDomain = pickFirst(
+      state.rawAccount &&
+        (state.rawAccount.domainName ||
+          state.rawAccount.primaryDomainName ||
+          state.rawAccount.domain)
+    );
+    if (accountDomain) {
+      candidates.unshift("https://" + accountDomain.replace(/^https?:\/\//i, ""));
+    }
+    return dedupeStrings(candidates);
+  }
+
+  function resolveNativeInvoicePreviewUrl(invoice) {
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    if (!invoiceId) {
+      return "";
+    }
+    const baseUrl = getWorkspaceCandidates()[0] || "";
+    if (!baseUrl) {
+      return "";
+    }
+    const cleanBase = baseUrl.replace(/\/+$/, "");
+    const projectId = String(invoice && invoice.sourceProjectId ? invoice.sourceProjectId : "").trim();
+    if (projectId) {
+      return (
+        cleanBase +
+        "/projects/" +
+        encodeURIComponent(projectId) +
+        "/invoices/invoices-detail/" +
+        encodeURIComponent(String(invoiceId).trim())
+      );
+    }
+    return cleanBase + "/invoices/" + encodeURIComponent(String(invoiceId).trim());
+  }
+
+  function resolveNativeInvoiceDownloadUrl(invoice) {
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    if (!invoiceId) {
+      return "";
+    }
+    const baseUrl = getWorkspaceCandidates()[0] || "";
+    if (!baseUrl) {
+      return "";
+    }
+    return (
+      baseUrl.replace(/\/+$/, "") +
+      "/invoices/" +
+      encodeURIComponent(String(invoiceId).trim()) +
+      "/attachments/download"
+    );
+  }
+
+  async function fetchNativeInvoicePdfBytes(invoice) {
+    const nativeDownloadUrl = resolveNativeInvoiceDownloadUrl(invoice);
+    if (!nativeDownloadUrl) {
+      return null;
+    }
+    try {
+      const response = await fetch(nativeDownloadUrl, {
+        method: "GET",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+      const disposition = String(
+        response.headers.get("content-disposition") || ""
+      ).toLowerCase();
+      const isPdfPayload =
+        contentType.indexOf("pdf") >= 0 ||
+        (contentType.indexOf("octet-stream") >= 0 && disposition.indexOf(".pdf") >= 0);
+      if (!isPdfPayload) {
+        return null;
+      }
+      const buffer = await response.arrayBuffer();
+      if (!buffer || !buffer.byteLength) {
+        return null;
+      }
+      return new Uint8Array(buffer);
+    } catch (_error) {
+      return null;
     }
   }
 
@@ -3292,21 +3378,7 @@
     if (!previewInvoiceId) {
       return null;
     }
-    const workspaceCandidates = [
-      "https://blink.rocketlane.com",
-      "https://innovate-calgary.rocketlane.com",
-    ];
-    const accountDomain = pickFirst(
-      state.rawAccount &&
-        (state.rawAccount.domainName ||
-          state.rawAccount.primaryDomainName ||
-          state.rawAccount.domain)
-    );
-    if (accountDomain) {
-      workspaceCandidates.unshift(
-        "https://" + accountDomain.replace(/^https?:\/\//i, "")
-      );
-    }
+    const workspaceCandidates = getWorkspaceCandidates();
     const payload = await state.client.data.invoke("syncInvoicesFromSource", {
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
@@ -3492,6 +3564,12 @@
       } catch (_error) {
         preview = null;
       }
+      let nativePdfBytes = null;
+      try {
+        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+      } catch (_error) {
+        nativePdfBytes = null;
+      }
       csvRows.push([
         formatStatus(invoice.invoiceStatus),
         invoice.invoiceNumber,
@@ -3518,13 +3596,27 @@
       if (preview) {
         exportRecord.preview = preview;
       }
-      const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-      const pdfBytes = pdfDataUrlToBytes(pdfDataUrl);
-      if (pdfBytes) {
+      if (nativePdfBytes) {
         zip.file(
           "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-          pdfBytes
+          nativePdfBytes
         );
+        exportRecord.nativePdfSource = resolveNativeInvoiceDownloadUrl(invoice);
+      } else {
+        const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+        const pdfBytes = pdfDataUrlToBytes(pdfDataUrl);
+        if (pdfBytes) {
+          zip.file(
+            "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            pdfBytes
+          );
+        }
+      }
+      if (nativePdfBytes || preview) {
+        exportRecord.previewSource =
+          nativePdfBytes && exportRecord.nativePdfSource
+            ? "native-download"
+            : "generated-from-preview";
       }
       zip.file(
         "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",

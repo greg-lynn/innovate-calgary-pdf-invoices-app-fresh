@@ -3397,10 +3397,9 @@
     ) {
       return null;
     }
-    const previewInvoiceId = pickFirst(
-      invoice.invoiceId || invoice.id || invoice.invoiceNumber
-    );
-    if (!previewInvoiceId) {
+    const previewInvoiceId = pickFirst(invoice.invoiceId || "");
+    const previewInvoiceNumber = pickFirst(invoice.invoiceNumber || "");
+    if (!previewInvoiceId && !previewInvoiceNumber) {
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
@@ -3410,6 +3409,8 @@
       workspaceBaseUrl: workspaceCandidates[0],
       workspaceCandidates,
       previewInvoiceId,
+      previewInvoiceNumber,
+      previewSourceProjectId: pickFirst(invoice.sourceProjectId || ""),
     });
     const result = unwrapServerActionResponse(payload);
     if (!result || result.ok === false) {

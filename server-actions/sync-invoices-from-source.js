@@ -213,6 +213,114 @@ function bytesToPdfDataUrl(bytes) {
   return `data:application/pdf;base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
+function canonicalInvoiceNumber(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function buildInvoiceDisplayNumber(record) {
+  if (!record || typeof record !== "object") {
+    return "";
+  }
+  const full = pickFirst(record.invoiceNumber);
+  if (full && /^INV[-\s]?\d+/i.test(full)) {
+    return full;
+  }
+  const prefix = pickFirst(record.invoiceNumberPrefix || "INV-");
+  const suffix = pickFirst(record.invoiceNumber);
+  if (!suffix) {
+    return "";
+  }
+  return `${prefix}${suffix}`;
+}
+
+function extractInvoiceProjectIds(record) {
+  if (!record || typeof record !== "object") {
+    return [];
+  }
+  const ids = [];
+  const mappings = Array.isArray(record.invoiceToSourceMappings)
+    ? record.invoiceToSourceMappings
+    : [];
+  mappings.forEach((mapping) => {
+    ids.push(
+      pickFirst(
+        mapping &&
+          (mapping.sourceId ||
+            (mapping.project && (mapping.project.projectId || mapping.project.id)))
+      )
+    );
+  });
+  return dedupeStrings(ids);
+}
+
+async function resolveInvoiceIdForPreview(
+  baseUrl,
+  headers,
+  previewInvoiceId,
+  previewInvoiceNumber,
+  previewSourceProjectId
+) {
+  const explicitId = pickFirst(previewInvoiceId);
+  if (/^\d+$/.test(explicitId)) {
+    return explicitId;
+  }
+
+  const targetNumber = canonicalInvoiceNumber(
+    previewInvoiceNumber || previewInvoiceId || ""
+  );
+  if (!targetNumber) {
+    return explicitId;
+  }
+
+  const containsToken = targetNumber.replace(/^INV/, "");
+  const lookupUrl = ensureAbsoluteUrl(
+    baseUrl,
+    `/api/v1/invoices?invoiceNumber.contains=${encodeURIComponent(containsToken)}`
+  );
+  if (!lookupUrl) {
+    return explicitId;
+  }
+  const lookupPayload = await requestJson(lookupUrl, headers);
+  const rows = Array.isArray(lookupPayload)
+    ? lookupPayload
+    : extractCollection(lookupPayload, ["data", "invoices", "items", "results"]);
+  if (!rows.length) {
+    return explicitId;
+  }
+
+  const targetProjectId = pickFirst(previewSourceProjectId);
+  const scored = rows
+    .map((row) => {
+      const invoiceId = pickFirst(row && row.invoiceId);
+      if (!invoiceId) {
+        return null;
+      }
+      const displayNumber = canonicalInvoiceNumber(buildInvoiceDisplayNumber(row));
+      const projectIds = extractInvoiceProjectIds(row);
+      const projectMatch =
+        !targetProjectId || projectIds.includes(String(targetProjectId));
+      let score = 0;
+      if (displayNumber === targetNumber) {
+        score += 10;
+      } else if (displayNumber.includes(targetNumber) || targetNumber.includes(displayNumber)) {
+        score += 5;
+      }
+      if (projectMatch) {
+        score += 3;
+      }
+      if (explicitId && invoiceId === explicitId) {
+        score += 2;
+      }
+      return { invoiceId, score };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score);
+
+  return (scored[0] && scored[0].invoiceId) || explicitId;
+}
+
 async function requestCollection(baseUrl, headers, paths, preferredKeys) {
   const rows = [];
   const seen = new Set();
@@ -853,11 +961,21 @@ module.exports = {
     };
     const viewer = deriveViewerAccess(request, context);
 
-    if (request.previewInvoiceId) {
-      const previewInvoiceId = encodeURIComponent(String(request.previewInvoiceId));
+    if (request.previewInvoiceId || request.previewInvoiceNumber) {
       for (let i = 0; i < apiBaseCandidates.length; i += 1) {
         const baseUrl = apiBaseCandidates[i];
         try {
+          const resolvedInvoiceId = await resolveInvoiceIdForPreview(
+            baseUrl,
+            headers,
+            request.previewInvoiceId,
+            request.previewInvoiceNumber,
+            request.previewSourceProjectId
+          );
+          const previewInvoiceId = encodeURIComponent(String(resolvedInvoiceId || ""));
+          if (!previewInvoiceId) {
+            throw new Error("Invoice ID could not be resolved for preview.");
+          }
           const invoicePayload = await requestJson(
             ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}`),
             headers
@@ -896,7 +1014,10 @@ module.exports = {
             ok: true,
             preview,
             viewer,
-            diagnostics: mergeObjects(diagnostics, { apiBaseUsed: baseUrl }),
+            diagnostics: mergeObjects(diagnostics, {
+              apiBaseUsed: baseUrl,
+              previewInvoiceResolvedId: String(resolvedInvoiceId || ""),
+            }),
           };
         } catch (error) {
           diagnostics.invoiceErrors.push(

@@ -76,6 +76,7 @@
     activeTab: "invoices",
     syncStatus: "Initializing...",
     invoicePreviewCache: {},
+    modalPdfBlobUrl: "",
     selectedDownloadIds: new Set(),
     exportMode: "selected",
     exportInsight: "",
@@ -2706,31 +2707,58 @@
       refs.modalInvoicePreview.classList.add("hidden");
       refs.modalInvoicePreview.innerHTML = "";
       refs.modalPdfFrame.classList.remove("hidden");
-      refs.modalPdfFrame.setAttribute("src", invoice.pdfUrl);
-      return;
-    }
-    const nativePreviewUrl = resolveNativeInvoicePreviewUrl(invoice);
-    if (nativePreviewUrl) {
-      refs.modalInvoicePreview.classList.add("hidden");
-      refs.modalInvoicePreview.innerHTML = "";
-      refs.modalPdfFrame.classList.remove("hidden");
-      refs.modalPdfFrame.setAttribute("src", nativePreviewUrl);
+      setModalPdfFrameSrc(invoice.pdfUrl);
       return;
     }
     refs.modalInvoicePreview.classList.add("hidden");
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
-    refs.modalPdfFrame.removeAttribute("src");
+    setModalPdfFrameSrc("");
     loadInvoicePreview(invoice);
   }
 
   function closePdfModal() {
     refs.pdfModal.classList.add("hidden");
     refs.pdfModal.setAttribute("aria-hidden", "true");
-    refs.modalPdfFrame.removeAttribute("src");
+    setModalPdfFrameSrc("");
     refs.modalPdfFrame.classList.remove("hidden");
     refs.modalInvoicePreview.classList.add("hidden");
     refs.modalInvoicePreview.innerHTML = "";
+  }
+
+  function clearModalPdfBlobUrl() {
+    if (!state.modalPdfBlobUrl) {
+      return;
+    }
+    try {
+      window.URL.revokeObjectURL(state.modalPdfBlobUrl);
+    } catch (_error) {
+      // Ignore cleanup errors from stale object URLs.
+    }
+    state.modalPdfBlobUrl = "";
+  }
+
+  function setModalPdfFrameSrc(src) {
+    clearModalPdfBlobUrl();
+    const value = String(src || "").trim();
+    if (!value) {
+      refs.modalPdfFrame.removeAttribute("src");
+      return;
+    }
+    refs.modalPdfFrame.setAttribute("src", value);
+  }
+
+  function setModalPdfFrameFromBytes(bytes) {
+    if (!(bytes instanceof Uint8Array) || !bytes.byteLength) {
+      return false;
+    }
+    clearModalPdfBlobUrl();
+    const blobUrl = window.URL.createObjectURL(
+      new Blob([bytes], { type: "application/pdf" })
+    );
+    state.modalPdfBlobUrl = blobUrl;
+    refs.modalPdfFrame.setAttribute("src", blobUrl);
+    return true;
   }
 
   function renderSearchInsight() {
@@ -3026,7 +3054,13 @@
       if (cached && cached.pdfDataUrl) {
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        refs.modalPdfFrame.setAttribute("src", cached.pdfDataUrl);
+        setModalPdfFrameSrc(cached.pdfDataUrl);
+        return;
+      }
+      const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+      if (setModalPdfFrameFromBytes(nativePdfBytes)) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
       const preview =
@@ -3041,7 +3075,7 @@
         }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        refs.modalPdfFrame.setAttribute("src", pdfDataUrl);
+        setModalPdfFrameSrc(pdfDataUrl);
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
@@ -3079,29 +3113,6 @@
       candidates.unshift("https://" + accountDomain.replace(/^https?:\/\//i, ""));
     }
     return dedupeStrings(candidates);
-  }
-
-  function resolveNativeInvoicePreviewUrl(invoice) {
-    const invoiceId = pickFirst(invoice && invoice.invoiceId);
-    if (!invoiceId) {
-      return "";
-    }
-    const baseUrl = getWorkspaceCandidates()[0] || "";
-    if (!baseUrl) {
-      return "";
-    }
-    const cleanBase = baseUrl.replace(/\/+$/, "");
-    const projectId = String(invoice && invoice.sourceProjectId ? invoice.sourceProjectId : "").trim();
-    if (projectId) {
-      return (
-        cleanBase +
-        "/projects/" +
-        encodeURIComponent(projectId) +
-        "/invoices/invoices-detail/" +
-        encodeURIComponent(String(invoiceId).trim())
-      );
-    }
-    return cleanBase + "/invoices/" + encodeURIComponent(String(invoiceId).trim());
   }
 
   function resolveNativeInvoiceDownloadUrl(invoice) {

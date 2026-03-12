@@ -3057,14 +3057,28 @@
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
+      const preview =
+        (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
+      const generatedPdfDataUrl =
+        preview && typeof preview === "object" ? String(preview.pdfDataUrl || "").trim() : "";
+      if (generatedPdfDataUrl) {
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: preview || null,
+            pdfDataUrl: generatedPdfDataUrl,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(generatedPdfDataUrl);
+        return;
+      }
       const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
       if (setModalPdfFrameFromBytes(nativePdfBytes)) {
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
-      const preview =
-        (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
       if (pdfDataUrl) {
         if (cacheKey) {
@@ -3575,11 +3589,14 @@
       } catch (_error) {
         preview = null;
       }
-      let nativePdfBytes = null;
+      let nativePdfBytes =
+        preview && preview.pdfDataUrl ? pdfDataUrlToBytes(preview.pdfDataUrl) : null;
       try {
-        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+        if (!nativePdfBytes) {
+          nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+        }
       } catch (_error) {
-        nativePdfBytes = null;
+        // Fall through to generated PDF when native bytes are unavailable.
       }
       csvRows.push([
         formatStatus(invoice.invoiceStatus),
@@ -3612,7 +3629,10 @@
           "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
           nativePdfBytes
         );
-        exportRecord.nativePdfSource = resolveNativeInvoiceDownloadUrl(invoice);
+        exportRecord.nativePdfSource =
+          preview && preview.pdfDataUrl
+            ? "server-generate"
+            : resolveNativeInvoiceDownloadUrl(invoice);
       } else {
         const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
         const pdfBytes = pdfDataUrlToBytes(pdfDataUrl);

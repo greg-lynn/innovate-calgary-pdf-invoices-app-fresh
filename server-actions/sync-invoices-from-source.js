@@ -191,6 +191,28 @@ async function requestJson(url, headers) {
   }
 }
 
+async function requestBinary(url, headers) {
+  const response = await fetch(url, {
+    method: "GET",
+    headers,
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed (${response.status}) for ${url}`);
+  }
+  const buffer = await response.arrayBuffer();
+  if (!buffer || !buffer.byteLength) {
+    return null;
+  }
+  return new Uint8Array(buffer);
+}
+
+function bytesToPdfDataUrl(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.byteLength) {
+    return "";
+  }
+  return `data:application/pdf;base64,${Buffer.from(bytes).toString("base64")}`;
+}
+
 async function requestCollection(baseUrl, headers, paths, preferredKeys) {
   const rows = [];
   const seen = new Set();
@@ -855,9 +877,24 @@ module.exports = {
             "items",
             "results",
           ]);
+          let generatedPdfDataUrl = "";
+          try {
+            const pdfBytes = await requestBinary(
+              ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}/generate`),
+              mergeObjects(headers, { Accept: "*/*" })
+            );
+            generatedPdfDataUrl = bytesToPdfDataUrl(pdfBytes);
+          } catch (_error) {
+            generatedPdfDataUrl = "";
+          }
+          const preview = normalizeInvoicePreview(invoicePayload || {}, lineItems, payments);
+          if (generatedPdfDataUrl) {
+            preview.pdfDataUrl = generatedPdfDataUrl;
+            preview.pdfSource = "api-v1-generate";
+          }
           return {
             ok: true,
-            preview: normalizeInvoicePreview(invoicePayload || {}, lineItems, payments),
+            preview,
             viewer,
             diagnostics: mergeObjects(diagnostics, { apiBaseUsed: baseUrl }),
           };

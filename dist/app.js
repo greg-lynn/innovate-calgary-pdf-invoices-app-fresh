@@ -2429,9 +2429,10 @@
   }
 
   function updateHeader() {
-    const view = state.context.projectName || "Cross-project view";
-    refs.scopeText.textContent =
-      "Scope: " + state.context.accountName + " / " + view + " invoices";
+    if (refs.scopeText) {
+      refs.scopeText.textContent = "";
+      refs.scopeText.classList.add("hidden");
+    }
 
     if (state.connected) {
       refs.connectionBadge.className = "badge badge-ok";
@@ -2536,27 +2537,36 @@
   }
 
   function renderSyncStatus() {
+    if (!refs.syncStatus) {
+      return;
+    }
+    if (!state.access.isAdmin) {
+      refs.syncStatus.textContent = "";
+      refs.syncStatus.classList.add("hidden");
+      return;
+    }
+    refs.syncStatus.classList.remove("hidden");
     refs.syncStatus.textContent = state.syncStatus || "";
   }
 
   function renderVisibilitySummary() {
-    if (state.access.isAdmin) {
-      refs.visibilitySummary.textContent =
-        "Admin access: all invoices from source projects are visible.";
+    if (!refs.visibilitySummary) {
       return;
     }
-    if (state.access.email) {
-      refs.visibilitySummary.textContent =
-        "Restricted access: only invoices associated with " +
-        state.access.email +
-        " are visible.";
-      return;
-    }
-    refs.visibilitySummary.textContent =
-      "Restricted access: sign-in email was not detected, so no invoices are visible.";
+    refs.visibilitySummary.textContent = "";
+    refs.visibilitySummary.classList.add("hidden");
   }
 
   function renderInvoiceStats() {
+    if (!refs.invoiceStats) {
+      return;
+    }
+    if (!state.access.isAdmin) {
+      refs.invoiceStats.textContent = "";
+      refs.invoiceStats.classList.add("hidden");
+      return;
+    }
+    refs.invoiceStats.classList.remove("hidden");
     const matched = getVisibleInvoices();
     const paged = getCurrentPageInvoices(matched);
     refs.invoiceStats.textContent =
@@ -2765,40 +2775,8 @@
     if (!refs.searchInsight) {
       return;
     }
-    const matchedCount = getVisibleInvoices().length;
-    const totalCount = state.invoices.length;
-    const activeFilterCount = countActiveFilters();
-    if (!state.searchQuery && activeFilterCount === 0) {
-      refs.searchInsight.textContent =
-        "Search and filters run across all invoice columns (status, number, project manager, amount, account, issue date, due date).";
-      return;
-    }
-    const queryText = state.searchQuery ? '"' + state.searchQuery + '"' : "current filters";
-    if (matchedCount > 0) {
-      refs.searchInsight.textContent =
-        "Showing " +
-        matchedCount +
-        " matching invoice(s) for " +
-        queryText +
-        " from " +
-        totalCount +
-        " loaded invoice(s).";
-      return;
-    }
-    if (state.searchQuery && state.searchServerCheckedQuery === state.searchQuery) {
-      refs.searchInsight.textContent =
-        "No matches for " +
-        queryText +
-        ". Server verified " +
-        (state.searchServerMatchedCount == null ? 0 : state.searchServerMatchedCount) +
-        " match(es). Try a different search input.";
-      return;
-    }
-    refs.searchInsight.textContent = state.searchQuery
-      ? "No local matches for " +
-        queryText +
-        ". Verifying against source projects..."
-      : "No invoices match the current filters. Try a different filter combination.";
+    refs.searchInsight.textContent = "";
+    refs.searchInsight.classList.add("hidden");
   }
 
   function renderFilterControls() {

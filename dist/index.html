@@ -18,7 +18,7 @@
         <div>
           <p class="eyebrow">Invoice Governance</p>
           <h1>Invoice Access Manager</h1>
-          <p id="scopeText" class="scope-text">Loading workspace context...</p>
+          <p id="scopeText" class="scope-text hidden">Loading workspace context...</p>
         </div>
         <div class="header-meta">
           <span id="connectionBadge" class="badge badge-muted">Initializing</span>
@@ -66,7 +66,7 @@
                 placeholder="Search by status, invoice #, project manager, amount, account, or date..."
               />
             </label>
-            <p id="searchInsight" class="muted">
+            <p id="searchInsight" class="muted hidden">
               Search runs across invoices in source projects and updates as you type.
             </p>
             <div class="filter-toggle-row">
@@ -132,7 +132,7 @@
               <p id="exportInsight" class="muted"></p>
             </section>
 
-            <p id="visibilitySummary" class="visibility-summary"></p>
+            <p id="visibilitySummary" class="visibility-summary hidden"></p>
 
             <div class="table-wrap">
               <table class="invoice-table" aria-label="Invoices table">

@@ -3559,6 +3559,9 @@
         "Due Date",
       ],
     ];
+    const summaryRows = [];
+    let pdfFileCount = 0;
+    let missingPdfCount = 0;
 
     for (let i = 0; i < invoicesToExport.length; i += 1) {
       const invoice = invoicesToExport[i];
@@ -3603,31 +3606,59 @@
       if (preview) {
         exportRecord.preview = preview;
       }
-      if (nativePdfBytes) {
-        zip.file(
-          "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-          nativePdfBytes
-        );
-        exportRecord.nativePdfSource =
+      let pdfBytesToWrite = null;
+      let pdfSource = "";
+      if (looksLikePdfBytes(nativePdfBytes)) {
+        pdfBytesToWrite = nativePdfBytes;
+        pdfSource =
           preview && preview.pdfDataUrl
             ? "server-generate"
-            : resolveNativeInvoiceDownloadUrl(invoice);
+            : "native-download";
       } else {
+        nativePdfBytes = null;
+      }
+      if (!pdfBytesToWrite) {
         const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-        const pdfBytes = pdfDataUrlToBytes(pdfDataUrl);
-        if (pdfBytes) {
-          zip.file(
-            "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-            pdfBytes
-          );
+        const generatedPdfBytes = pdfDataUrlToBytes(pdfDataUrl);
+        if (looksLikePdfBytes(generatedPdfBytes)) {
+          pdfBytesToWrite = generatedPdfBytes;
+          pdfSource = "generated-fallback";
         }
       }
-      if (nativePdfBytes || preview) {
+      if (pdfBytesToWrite) {
+        zip.file(
+          "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+          pdfBytesToWrite
+        );
+        pdfFileCount += 1;
+      } else {
+        missingPdfCount += 1;
+        appendLog(
+          "PDF_PREVIEW_FAILED",
+          "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+        );
+      }
+      if (pdfBytesToWrite || preview) {
         exportRecord.previewSource =
-          nativePdfBytes && exportRecord.nativePdfSource
+          pdfSource === "native-download" || pdfSource === "server-generate"
             ? "native-download"
             : "generated-from-preview";
       }
+      exportRecord.pdfIncluded = Boolean(pdfBytesToWrite);
+      exportRecord.pdfSource = pdfSource || "none";
+      exportRecord.nativePdfSource =
+        pdfSource === "native-download" ? resolveNativeInvoiceDownloadUrl(invoice) : "";
+      summaryRows.push({
+        invoiceNumber: invoice.invoiceNumber,
+        invoiceStatus: formatStatus(invoice.invoiceStatus),
+        projectManager: invoice.ownerName || "",
+        account: invoice.accountName || "",
+        amount: formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
+        issueDate: formatDate(invoice.issueDate || invoice.invoiceDate),
+        dueDate: formatDate(invoice.dueDate),
+        pdfIncluded: Boolean(pdfBytesToWrite),
+        pdfSource: pdfSource || "none",
+      });
       zip.file(
         "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
         JSON.stringify(exportRecord, null, 2)
@@ -3635,6 +3666,16 @@
     }
 
     zip.file("invoices.csv", toCsv(csvRows));
+    const summaryPayload = {
+      generatedAt: new Date().toISOString(),
+      exportMode: state.exportMode,
+      invoiceCount: invoicesToExport.length,
+      pdfFileCount,
+      missingPdfCount,
+      invoices: summaryRows,
+    };
+    zip.file("summary/invoice-summary.json", JSON.stringify(summaryPayload, null, 2));
+    zip.file("summary/invoice-summary.txt", buildInvoiceSummaryText(summaryPayload));
     const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
     const blob = await zip.generateAsync({ type: "blob" });
     const fileName =
@@ -3677,6 +3718,18 @@
     }
   }
 
+  function looksLikePdfBytes(bytes) {
+    return (
+      bytes instanceof Uint8Array &&
+      bytes.length >= 5 &&
+      bytes[0] === 0x25 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x44 &&
+      bytes[3] === 0x46 &&
+      bytes[4] === 0x2d
+    );
+  }
+
   function safeFileName(value) {
     return String(value || "invoice")
       .replace(/[^a-z0-9._-]+/gi, "-")
@@ -3698,6 +3751,38 @@
           .join(",")
       )
       .join("\n");
+  }
+
+  function buildInvoiceSummaryText(summary) {
+    const data = summary || {};
+    const lines = [
+      "Invoice Export Summary",
+      "Generated: " + String(data.generatedAt || ""),
+      "Export mode: " + String(data.exportMode || ""),
+      "Total invoices: " + String(data.invoiceCount || 0),
+      "PDF files included: " + String(data.pdfFileCount || 0),
+      "Missing PDF files: " + String(data.missingPdfCount || 0),
+      "",
+      "Invoices:",
+    ];
+    const rows = Array.isArray(data.invoices) ? data.invoices : [];
+    rows.forEach((row, index) => {
+      lines.push(
+        [
+          String(index + 1) + ".",
+          String(row.invoiceNumber || "Unknown"),
+          "|",
+          String(row.invoiceStatus || "Unknown"),
+          "|",
+          String(row.amount || ""),
+          "| PDF:",
+          row.pdfIncluded ? "yes" : "no",
+          "| Source:",
+          String(row.pdfSource || "none"),
+        ].join(" ")
+      );
+    });
+    return lines.join("\n");
   }
 
   function toggleInvoiceDownloadSelection(invoiceId, checked) {

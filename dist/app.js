@@ -2454,12 +2454,6 @@
       refs.tabLogsButton.textContent = "Diagnostics";
       refs.tabLogsButton.classList.remove("locked");
       refs.clearLogsButton.classList.remove("hidden");
-      if (refs.contextPanel) {
-        refs.contextPanel.classList.remove("hidden");
-      }
-      if (refs.layoutGrid) {
-        refs.layoutGrid.classList.remove("single-column");
-      }
       refs.logsInfoText.textContent =
         "Admin users can view full diagnostics, error context, and remediation suggestions.";
     } else {
@@ -2482,6 +2476,12 @@
       refs.tabInvoicesButton.setAttribute("aria-selected", "true");
       refs.logsInfoText.textContent =
         "Diagnostics details are admin-only. This tab still provides access guidance.";
+    }
+    if (refs.contextPanel) {
+      refs.contextPanel.classList.add("hidden");
+    }
+    if (refs.layoutGrid) {
+      refs.layoutGrid.classList.add("single-column");
     }
   }
 
@@ -3606,6 +3606,7 @@
       if (preview) {
         exportRecord.preview = preview;
       }
+      const invoicedHours = extractInvoicedHours(preview);
       let pdfBytesToWrite = null;
       let pdfSource = "";
       if (looksLikePdfBytes(nativePdfBytes)) {
@@ -3649,13 +3650,15 @@
       exportRecord.nativePdfSource =
         pdfSource === "native-download" ? resolveNativeInvoiceDownloadUrl(invoice) : "";
       summaryRows.push({
+        createdBy: pickFirst((preview && preview.billToName) || invoice.ownerName || ""),
+        status: formatStatus(invoice.invoiceStatus),
         invoiceNumber: invoice.invoiceNumber,
-        invoiceStatus: formatStatus(invoice.invoiceStatus),
-        projectManager: invoice.ownerName || "",
-        account: invoice.accountName || "",
         amount: formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
+        account: invoice.accountName || "",
+        projectName:
+          pickFirst((preview && preview.projectName) || invoice.sourceProjectName || "") || "",
         issueDate: formatDate(invoice.issueDate || invoice.invoiceDate),
-        dueDate: formatDate(invoice.dueDate),
+        invoicedHours: formatHours(invoicedHours),
         pdfIncluded: Boolean(pdfBytesToWrite),
         pdfSource: pdfSource || "none",
       });
@@ -3676,6 +3679,12 @@
     };
     zip.file("summary/invoice-summary.json", JSON.stringify(summaryPayload, null, 2));
     zip.file("summary/invoice-summary.txt", buildInvoiceSummaryText(summaryPayload));
+    if (state.exportMode === "all") {
+      zip.file(
+        "summary/invoice-summary.xls",
+        buildInvoiceSummaryWorkbookHtml(summaryRows, summaryPayload.generatedAt)
+      );
+    }
     const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
     const blob = await zip.generateAsync({ type: "blob" });
     const fileName =
@@ -3753,6 +3762,65 @@
       .join("\n");
   }
 
+  function extractInvoicedHours(preview) {
+    const lineItems = preview && Array.isArray(preview.lineItems) ? preview.lineItems : [];
+    return lineItems.reduce((sum, line) => {
+      const qty = Number(line && line.quantity);
+      return Number.isFinite(qty) ? sum + qty : sum;
+    }, 0);
+  }
+
+  function formatHours(value) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric)) {
+      return "0.00";
+    }
+    return numeric.toFixed(2);
+  }
+
+  function buildInvoiceSummaryWorkbookHtml(rows, generatedAt) {
+    const records = Array.isArray(rows) ? rows : [];
+    const columns = [
+      ["Created By", "createdBy"],
+      ["Status", "status"],
+      ["Invoice Number", "invoiceNumber"],
+      ["Amount", "amount"],
+      ["Account", "account"],
+      ["Project Name", "projectName"],
+      ["Issue Date", "issueDate"],
+      ["Invoiced Hours", "invoicedHours"],
+    ];
+    const headerHtml = columns.map((column) => "<th>" + escapeHtml(column[0]) + "</th>").join("");
+    const bodyHtml = records
+      .map((record) => {
+        const cells = columns
+          .map((column) => {
+            const key = column[1];
+            return "<td>" + escapeHtml(record && record[key] != null ? record[key] : "") + "</td>";
+          })
+          .join("");
+        return "<tr>" + cells + "</tr>";
+      })
+      .join("");
+    return (
+      '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
+      'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
+      'xmlns="http://www.w3.org/TR/REC-html40"><head>' +
+      '<meta charset="utf-8" />' +
+      "<style>table{border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;}th,td{border:1px solid #999;padding:6px 8px;}th{background:#f0f0f0;font-weight:700;}</style>" +
+      "</head><body>" +
+      "<h3>Invoice export summary</h3>" +
+      '<p>Generated: ' +
+      escapeHtml(generatedAt || "") +
+      "</p>" +
+      "<table><thead><tr>" +
+      headerHtml +
+      "</tr></thead><tbody>" +
+      bodyHtml +
+      "</tbody></table></body></html>"
+    );
+  }
+
   function buildInvoiceSummaryText(summary) {
     const data = summary || {};
     const lines = [
@@ -3772,7 +3840,7 @@
           String(index + 1) + ".",
           String(row.invoiceNumber || "Unknown"),
           "|",
-          String(row.invoiceStatus || "Unknown"),
+          String(row.status || "Unknown"),
           "|",
           String(row.amount || ""),
           "| PDF:",

@@ -63,7 +63,7 @@
               <input
                 id="searchInput"
                 type="search"
-                placeholder="Search by status, invoice #, project manager, amount, account, or date..."
+                placeholder="Search by status, invoice #, expert advisor, amount, client, contract name, hub, program, hours, or date..."
               />
             </label>
             <p id="searchInsight" class="muted hidden">
@@ -84,7 +84,7 @@
                 <input id="filterInvoiceNumber" type="search" placeholder="Any" />
               </label>
               <label class="filter-control">
-                <span>Project Manager</span>
+                <span>Expert Advisor</span>
                 <select id="filterProjectManager">
                   <option value="">All</option>
                 </select>
@@ -96,8 +96,32 @@
                 </select>
               </label>
               <label class="filter-control">
-                <span>Account</span>
+                <span>Client</span>
                 <select id="filterAccount">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Contract Name</span>
+                <select id="filterContractName">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Hub</span>
+                <select id="filterHub">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Program</span>
+                <select id="filterProgram">
+                  <option value="">All</option>
+                </select>
+              </label>
+              <label class="filter-control">
+                <span>Hours</span>
+                <select id="filterQuantityHours">
                   <option value="">All</option>
                 </select>
               </label>
@@ -138,14 +162,23 @@
               <table class="invoice-table" aria-label="Invoices table">
                 <thead>
                   <tr>
-                    <th scope="col">Select</th>
+                    <th scope="col">
+                      <label class="select-all-header">
+                        <input id="selectAllInvoicesCheckbox" type="checkbox" />
+                        <span>Select all</span>
+                      </label>
+                    </th>
                     <th scope="col"><button class="sort-button" data-sort="invoiceStatus" type="button">Invoice status</button></th>
                     <th scope="col"><button class="sort-button" data-sort="invoiceNumber" type="button">Invoice Number</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="ownerName" type="button">Project Manager</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="ownerName" type="button">Expert Advisor</button></th>
                     <th scope="col"><button class="sort-button" data-sort="amount" type="button">Amount</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="accountName" type="button">Account</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="accountName" type="button">Client</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="contractName" type="button">Contract Name</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="hub" type="button">Hub</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="program" type="button">Program</button></th>
                     <th scope="col"><button class="sort-button" data-sort="issueDate" type="button">Issue Date</button></th>
                     <th scope="col"><button class="sort-button" data-sort="dueDate" type="button">Due Date</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="quantityHours" type="button">Hours</button></th>
                   </tr>
                 </thead>
                 <tbody id="invoiceTableBody"></tbody>

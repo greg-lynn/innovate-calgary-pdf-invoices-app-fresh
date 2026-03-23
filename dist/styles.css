@@ -351,8 +351,23 @@ input:focus {
 
 .invoice-table td.select-cell,
 .invoice-table thead th:first-child {
-  width: 66px;
-  min-width: 66px;
+  width: 112px;
+  min-width: 112px;
+}
+
+.select-all-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2b4a98;
+}
+
+.select-all-header input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
 }
 
 .invoice-select-checkbox {

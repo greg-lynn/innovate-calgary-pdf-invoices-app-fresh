@@ -93,6 +93,130 @@ function normalizeAmount(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function normalizeFieldLabel(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function toFieldText(value) {
+  if (value == null) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return dedupeStrings(value.map((entry) => toFieldText(entry))).join(", ");
+  }
+  if (typeof value === "object") {
+    return pickFirst(
+      value.fieldValueLabel ||
+        value.fieldValue ||
+        value.label ||
+        value.name ||
+        value.value ||
+        value.displayValue
+    );
+  }
+  return String(value).trim();
+}
+
+function extractNamedCustomFieldValues(fields) {
+  const output = {
+    contractName: [],
+    hub: [],
+    program: [],
+  };
+  if (!Array.isArray(fields)) {
+    return output;
+  }
+  fields.forEach((field) => {
+    if (!field || typeof field !== "object") {
+      return;
+    }
+    const label = normalizeFieldLabel(
+      pickFirst(
+        field.fieldLabel || field.fieldName || field.label || field.name || field.key
+      )
+    );
+    if (!label) {
+      return;
+    }
+    let targetKey = "";
+    if (label === "contract name" || label === "contractname" || label === "contract") {
+      targetKey = "contractName";
+    } else if (label === "hub") {
+      targetKey = "hub";
+    } else if (label === "program") {
+      targetKey = "program";
+    }
+    if (!targetKey) {
+      return;
+    }
+    const candidates = [
+      field.fieldValueLabel,
+      field.fieldValue,
+      field.displayValue,
+      field.value,
+      field.values,
+      field.metaFieldValue && field.metaFieldValue.label,
+      field.metaFieldValue && field.metaFieldValue.value,
+      field.option && field.option.label,
+      field.option && field.option.value,
+    ];
+    candidates.forEach((candidate) => {
+      const text = toFieldText(candidate);
+      if (!text) {
+        return;
+      }
+      text
+        .split(",")
+        .map((part) => pickFirst(part))
+        .filter(Boolean)
+        .forEach((part) => output[targetKey].push(part));
+    });
+  });
+  output.contractName = dedupeStrings(output.contractName);
+  output.hub = dedupeStrings(output.hub);
+  output.program = dedupeStrings(output.program);
+  return output;
+}
+
+function compactJoined(values) {
+  return dedupeStrings((Array.isArray(values) ? values : []).map((value) => pickFirst(value))).join(
+    ", "
+  );
+}
+
+function collectInvoiceLineItems(record) {
+  const lineItems = [];
+  const pushLines = (items) => {
+    if (!Array.isArray(items)) {
+      return;
+    }
+    items.forEach((item) => {
+      if (item && typeof item === "object") {
+        lineItems.push(item);
+      }
+    });
+  };
+  pushLines(record && record.invoiceLineItems);
+  if (record && Array.isArray(record.invoiceToSourceMappings)) {
+    record.invoiceToSourceMappings.forEach((mapping) => {
+      pushLines(mapping && mapping.invoiceLineItems);
+    });
+  }
+  return lineItems;
+}
+
+function sumLineItemQuantity(lineItems) {
+  return (Array.isArray(lineItems) ? lineItems : []).reduce((sum, line) => {
+    const quantity = normalizeAmount(
+      line && (line.quantity || line.hours || line.billableHours || line.billableQuantity)
+    );
+    return sum + (Number.isFinite(quantity) ? quantity : 0);
+  }, 0);
+}
+
 function invoiceMatchesQuery(invoice, query) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   if (!normalizedQuery) {
@@ -114,6 +238,14 @@ function invoiceMatchesQuery(invoice, query) {
     String(invoice.dueDate || "") +
     " " +
     String(invoice.amount || "") +
+    " " +
+    String(invoice.contractName || "") +
+    " " +
+    String(invoice.hub || "") +
+    " " +
+    String(invoice.program || "") +
+    " " +
+    String(invoice.quantityHours || "") +
     " " +
     String(invoice.sourceProjectName || "") +
     " " +
@@ -410,6 +542,7 @@ function normalizeProject(record) {
   const memberUserIds = dedupeStrings(
     teamMembers.map((member) => pickFirst(member && (member.userId || member.id || member._id)))
   );
+  const customFieldValues = extractNamedCustomFieldValues(record.fields);
   return {
     id,
     name,
@@ -419,6 +552,9 @@ function normalizeProject(record) {
     ownerUserId: ownerUserId || memberUserIds[0] || "",
     memberEmails,
     memberUserIds,
+    contractName: compactJoined(customFieldValues.contractName),
+    hub: compactJoined(customFieldValues.hub),
+    program: compactJoined(customFieldValues.program),
   };
 }
 
@@ -553,6 +689,17 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   const projectEmails = dedupeStrings([
     normalizeEmail(project && project.ownerEmail),
   ].concat((project && project.memberEmails) || []));
+  const customFieldValues = extractNamedCustomFieldValues(record.fields);
+  const lineItems = collectInvoiceLineItems(record);
+  const quantityHours = sumLineItemQuantity(lineItems);
+  const contractName = compactJoined(
+    customFieldValues.contractName.concat([project && project.contractName])
+  );
+  const hub = compactJoined(customFieldValues.hub.concat([project && project.hub]));
+  const program = compactJoined(
+    customFieldValues.program.concat([project && project.program])
+  );
+  const createdByName = fullName(record.createdBy) || pickFirst(record.createdByName);
 
   if (!invoiceNumber && !invoiceName) {
     return null;
@@ -600,6 +747,11 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     currencyCode,
     currencySymbol,
     pdfUrl,
+    createdByName,
+    contractName,
+    hub,
+    program,
+    quantityHours,
     associatedEmails: dedupeStrings(associatedEmails.concat(projectEmails)),
     associatedUserIds: dedupeStrings(associatedUserIds.concat(projectUserIds)),
     sourceProjectId: project.id || "",

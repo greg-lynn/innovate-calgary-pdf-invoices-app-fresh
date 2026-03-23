@@ -70,6 +70,10 @@
       ownerName: "",
       amount: "",
       accountName: "",
+      contractName: "",
+      hub: "",
+      program: "",
+      quantityHours: "",
       issueDate: "",
       dueDate: "",
     },
@@ -78,6 +82,7 @@
     invoicePreviewCache: {},
     modalPdfBlobUrl: "",
     selectedDownloadIds: new Set(),
+    isSelectAllChecked: false,
     exportMode: "selected",
     exportInsight: "",
     access: {
@@ -167,6 +172,10 @@
     refs.filterProjectManager = document.getElementById("filterProjectManager");
     refs.filterAmount = document.getElementById("filterAmount");
     refs.filterAccount = document.getElementById("filterAccount");
+    refs.filterContractName = document.getElementById("filterContractName");
+    refs.filterHub = document.getElementById("filterHub");
+    refs.filterProgram = document.getElementById("filterProgram");
+    refs.filterQuantityHours = document.getElementById("filterQuantityHours");
     refs.filterIssueDate = document.getElementById("filterIssueDate");
     refs.filterDueDate = document.getElementById("filterDueDate");
     refs.clearFiltersButton = document.getElementById("clearFiltersButton");
@@ -176,6 +185,7 @@
     refs.invoiceStats = document.getElementById("invoiceStats");
     refs.sortButtons = Array.from(document.querySelectorAll(".sort-button"));
     refs.invoiceTableBody = document.getElementById("invoiceTableBody");
+    refs.selectAllInvoicesCheckbox = document.getElementById("selectAllInvoicesCheckbox");
     refs.invoiceEmptyState = document.getElementById("invoiceEmptyState");
     refs.invoiceEmptyTitle = refs.invoiceEmptyState.querySelector("h3");
     refs.invoiceEmptyBody = refs.invoiceEmptyState.querySelector("p");
@@ -219,6 +229,11 @@
       state.exportMode = String(event.target.value || "selected");
       renderExportInsight();
     });
+    if (refs.selectAllInvoicesCheckbox) {
+      refs.selectAllInvoicesCheckbox.addEventListener("change", (event) => {
+        onToggleSelectAllInvoices(Boolean(event.target.checked));
+      });
+    }
     refs.clearLogsButton.addEventListener("click", onClearLogs);
     refs.closeModalButton.addEventListener("click", closePdfModal);
     refs.pdfModal.addEventListener("click", (event) => {
@@ -242,6 +257,10 @@
       state.filters.ownerName = String(refs.filterProjectManager.value || "");
       state.filters.amount = String(refs.filterAmount.value || "");
       state.filters.accountName = String(refs.filterAccount.value || "");
+      state.filters.contractName = String(refs.filterContractName.value || "");
+      state.filters.hub = String(refs.filterHub.value || "");
+      state.filters.program = String(refs.filterProgram.value || "");
+      state.filters.quantityHours = String(refs.filterQuantityHours.value || "");
       state.filters.issueDate = String(refs.filterIssueDate.value || "");
       state.filters.dueDate = String(refs.filterDueDate.value || "");
       state.currentPage = 1;
@@ -253,6 +272,10 @@
     refs.filterProjectManager.addEventListener("change", handleFilterChange);
     refs.filterAmount.addEventListener("change", handleFilterChange);
     refs.filterAccount.addEventListener("change", handleFilterChange);
+    refs.filterContractName.addEventListener("change", handleFilterChange);
+    refs.filterHub.addEventListener("change", handleFilterChange);
+    refs.filterProgram.addEventListener("change", handleFilterChange);
+    refs.filterQuantityHours.addEventListener("change", handleFilterChange);
     refs.filterIssueDate.addEventListener("change", handleFilterChange);
     refs.filterDueDate.addEventListener("change", handleFilterChange);
     refs.clearFiltersButton.addEventListener("click", clearFilters);
@@ -2205,6 +2228,10 @@
             (node.account && node.account.name) ||
             (node.customer && node.customer.name)
         ) || project.accountName || state.context.accountName || "Rocketlane Account",
+      contractName: pickFirst(node.contractName || project.contractName || ""),
+      hub: pickFirst(node.hub || project.hub || ""),
+      program: pickFirst(node.program || project.program || ""),
+      quantityHours: Number(pickFirst(node.quantityHours || node.quantity || node.hours || 0)),
       invoiceDate,
       issueDate: invoiceDate,
       dueDate,
@@ -2322,6 +2349,10 @@
       amount: Number(invoice.amount || 0),
       currencyCode: String(invoice.currencyCode || "").trim(),
       currencySymbol: String(invoice.currencySymbol || "").trim(),
+      contractName: String(invoice.contractName || "").trim(),
+      hub: String(invoice.hub || "").trim(),
+      program: String(invoice.program || "").trim(),
+      quantityHours: Number(invoice.quantityHours || 0),
       pdfUrl,
       associatedEmails: dedupeEmails(invoice.associatedEmails || []),
       associatedUserIds: dedupeStrings(invoice.associatedUserIds || []),
@@ -2602,6 +2633,7 @@
         }
       }
       refs.invoiceEmptyState.classList.remove("hidden");
+      renderSelectAllState();
       return;
     }
     refs.invoiceEmptyState.classList.add("hidden");
@@ -2661,11 +2693,23 @@
       const accountCell = document.createElement("td");
       accountCell.textContent = invoice.accountName;
 
+      const contractCell = document.createElement("td");
+      contractCell.textContent = invoice.contractName || "";
+
+      const hubCell = document.createElement("td");
+      hubCell.textContent = invoice.hub || "";
+
+      const programCell = document.createElement("td");
+      programCell.textContent = invoice.program || "";
+
       const issueDateCell = document.createElement("td");
       issueDateCell.textContent = formatDate(invoice.issueDate || invoice.invoiceDate);
 
       const dueDateCell = document.createElement("td");
       dueDateCell.textContent = formatDate(invoice.dueDate);
+
+      const quantityCell = document.createElement("td");
+      quantityCell.textContent = formatHours(invoice.quantityHours);
 
       row.appendChild(selectCell);
       row.appendChild(statusCell);
@@ -2673,10 +2717,47 @@
       row.appendChild(ownerCell);
       row.appendChild(amountCell);
       row.appendChild(accountCell);
+      row.appendChild(contractCell);
+      row.appendChild(hubCell);
+      row.appendChild(programCell);
       row.appendChild(issueDateCell);
       row.appendChild(dueDateCell);
+      row.appendChild(quantityCell);
       refs.invoiceTableBody.appendChild(row);
     });
+    renderSelectAllState();
+  }
+
+  function onToggleSelectAllInvoices(checked) {
+    const matched = getVisibleInvoices();
+    matched.forEach((invoice) => {
+      if (!invoice || !invoice.id) {
+        return;
+      }
+      toggleInvoiceDownloadSelection(invoice.id, Boolean(checked), false);
+    });
+    renderSelectAllState();
+    renderExportInsight();
+  }
+
+  function renderSelectAllState() {
+    if (!refs.selectAllInvoicesCheckbox) {
+      return;
+    }
+    const matched = getVisibleInvoices();
+    if (!matched.length) {
+      refs.selectAllInvoicesCheckbox.checked = false;
+      refs.selectAllInvoicesCheckbox.indeterminate = false;
+      refs.selectAllInvoicesCheckbox.disabled = true;
+      return;
+    }
+    refs.selectAllInvoicesCheckbox.disabled = false;
+    const selectedCount = matched.filter(
+      (invoice) => invoice && invoice.id && state.selectedDownloadIds.has(invoice.id)
+    ).length;
+    refs.selectAllInvoicesCheckbox.checked = selectedCount === matched.length;
+    refs.selectAllInvoicesCheckbox.indeterminate =
+      selectedCount > 0 && selectedCount < matched.length;
   }
 
   function renderSelectedSummary() {
@@ -2791,6 +2872,17 @@
       .map((value) => formatAmount(value, "", "$"));
     populateSelectOptions(refs.filterAmount, amountValues);
     populateSelectOptions(refs.filterAccount, uniqueFieldValues("accountName"));
+    populateSelectOptions(refs.filterContractName, uniqueFieldValues("contractName"));
+    populateSelectOptions(refs.filterHub, uniqueFieldValues("hub"));
+    populateSelectOptions(refs.filterProgram, uniqueFieldValues("program"));
+    const quantityValues = dedupeStrings(
+      getAccessibleInvoices().map((invoice) => formatHours(invoice.quantityHours))
+    )
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value))
+      .sort((a, b) => a - b)
+      .map((value) => formatHours(value));
+    populateSelectOptions(refs.filterQuantityHours, quantityValues);
     populateSelectOptions(
       refs.filterIssueDate,
       uniqueFieldValues("issueDate", "invoiceDate").map((value) => formatDate(value))
@@ -2804,6 +2896,10 @@
     refs.filterProjectManager.value = state.filters.ownerName;
     refs.filterAmount.value = state.filters.amount;
     refs.filterAccount.value = state.filters.accountName;
+    refs.filterContractName.value = state.filters.contractName;
+    refs.filterHub.value = state.filters.hub;
+    refs.filterProgram.value = state.filters.program;
+    refs.filterQuantityHours.value = state.filters.quantityHours;
     refs.filterIssueDate.value = state.filters.issueDate;
     refs.filterDueDate.value = state.filters.dueDate;
   }
@@ -2846,6 +2942,10 @@
       state.filters.ownerName,
       state.filters.amount,
       state.filters.accountName,
+      state.filters.contractName,
+      state.filters.hub,
+      state.filters.program,
+      state.filters.quantityHours,
       state.filters.issueDate,
       state.filters.dueDate,
     ].filter(Boolean).length;
@@ -2858,6 +2958,10 @@
       ownerName: "",
       amount: "",
       accountName: "",
+      contractName: "",
+      hub: "",
+      program: "",
+      quantityHours: "",
       issueDate: "",
       dueDate: "",
     };
@@ -2879,7 +2983,12 @@
   }
 
   function defaultSortDirectionForColumn(column) {
-    if (column === "issueDate" || column === "dueDate" || column === "amount") {
+    if (
+      column === "issueDate" ||
+      column === "dueDate" ||
+      column === "amount" ||
+      column === "quantityHours"
+    ) {
       return "desc";
     }
     return "asc";
@@ -3552,11 +3661,15 @@
       [
         "Invoice Status",
         "Invoice Number",
-        "Project Manager",
+        "Expert Advisor",
         "Amount",
-        "Account",
+        "Client",
+        "Contract Name",
+        "Hub",
+        "Program",
         "Issue Date",
         "Due Date",
+        "Hours",
       ],
     ];
     const summaryRows = [];
@@ -3586,19 +3699,27 @@
         invoice.ownerName || "",
         formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
         invoice.accountName,
+        invoice.contractName || "",
+        invoice.hub || "",
+        invoice.program || "",
         formatDate(invoice.issueDate || invoice.invoiceDate),
         formatDate(invoice.dueDate),
+        formatHours(invoice.quantityHours),
       ]);
       const exportRecord = {
         invoiceStatus: formatStatus(invoice.invoiceStatus),
         invoiceNumber: invoice.invoiceNumber,
-        projectManager: invoice.ownerName || "",
+        expertAdvisor: invoice.ownerName || "",
         amount: invoice.amount || 0,
         currencyCode: invoice.currencyCode || "",
         currencySymbol: invoice.currencySymbol || "",
-        account: invoice.accountName,
+        client: invoice.accountName,
+        contractName: invoice.contractName || "",
+        hub: invoice.hub || "",
+        program: invoice.program || "",
         issueDate: invoice.issueDate || invoice.invoiceDate,
         dueDate: invoice.dueDate || "",
+        hours: Number(invoice.quantityHours || 0),
         sourceProjectName: invoice.sourceProjectName || "",
         associatedEmails: invoice.associatedEmails || [],
         associatedUserIds: invoice.associatedUserIds || [],
@@ -3853,7 +3974,7 @@
     return lines.join("\n");
   }
 
-  function toggleInvoiceDownloadSelection(invoiceId, checked) {
+  function toggleInvoiceDownloadSelection(invoiceId, checked, rerender = true) {
     const id = String(invoiceId || "");
     if (!id) {
       return;
@@ -3863,7 +3984,10 @@
     } else {
       state.selectedDownloadIds.delete(id);
     }
-    renderExportInsight();
+    if (rerender) {
+      renderExportInsight();
+      renderSelectAllState();
+    }
   }
 
   function getSelectedDownloadInvoices(candidateInvoices) {
@@ -3905,6 +4029,7 @@
       const issueDateLabel = formatDate(invoice.issueDate || invoice.invoiceDate);
       const dueDateLabel = formatDate(invoice.dueDate);
       const amountLabel = formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol);
+      const quantityLabel = formatHours(invoice.quantityHours);
       if (filters.invoiceStatus && status !== filters.invoiceStatus) {
         return false;
       }
@@ -3918,6 +4043,18 @@
         return false;
       }
       if (filters.accountName && String(invoice.accountName || "") !== filters.accountName) {
+        return false;
+      }
+      if (filters.contractName && String(invoice.contractName || "") !== filters.contractName) {
+        return false;
+      }
+      if (filters.hub && String(invoice.hub || "") !== filters.hub) {
+        return false;
+      }
+      if (filters.program && String(invoice.program || "") !== filters.program) {
+        return false;
+      }
+      if (filters.quantityHours && quantityLabel !== filters.quantityHours) {
         return false;
       }
       if (filters.issueDate && issueDateLabel !== filters.issueDate) {
@@ -3940,6 +4077,14 @@
         " " +
         String(invoice.accountName || "") +
         " " +
+        String(invoice.contractName || "") +
+        " " +
+        String(invoice.hub || "") +
+        " " +
+        String(invoice.program || "") +
+        " " +
+        quantityLabel +
+        " " +
         issueDateLabel +
         " " +
         dueDateLabel
@@ -3954,6 +4099,9 @@
     rows.sort((a, b) => {
       if (sortBy === "amount") {
         return direction * ((Number(a.amount || 0) - Number(b.amount || 0)) || 0);
+      }
+      if (sortBy === "quantityHours") {
+        return direction * ((Number(a.quantityHours || 0) - Number(b.quantityHours || 0)) || 0);
       }
       if (sortBy === "issueDate" || sortBy === "dueDate") {
         const aTime = timestampValue(a[sortBy] || (sortBy === "issueDate" ? a.invoiceDate : ""));

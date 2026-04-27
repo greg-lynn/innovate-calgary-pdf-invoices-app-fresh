@@ -1004,7 +1004,7 @@
   }
 
   async function refreshInvoicesFromSource() {
-    state.syncStatus = "Fetching invoices from source projects...";
+    state.syncStatus = "Fetching invoices from account...";
     renderSyncStatus();
 
     let invoices = [];
@@ -1029,24 +1029,23 @@
     } catch (error) {
       appendLog(
         "SOURCE_FETCH_FAILED",
-        "Unable to fetch invoices from source projects.",
+        "Unable to fetch invoices from account.",
         error
       );
     }
 
     if (!invoices.length) {
       state.syncStatus =
-        "No invoices found in source project(s) yet. Add approved invoices in Expert Advisor Program Invoices and refresh.";
+        "No invoices found in this account yet. Add an invoice and refresh.";
       appendLog(
         "SOURCE_INVOICES_NOT_FOUND",
-        "No invoices were discovered from source project data."
+        "No invoices were discovered from account-wide invoice data."
       );
     } else {
       state.syncStatus =
         "Loaded " +
         invoices.length +
-        " invoice(s) from source project(s): " +
-        state.sourceProjects.join(", ");
+        " invoice(s) from account invoices (type=all).";
     }
 
     state.invoices = invoices.map(normalizeInvoice).filter(Boolean);

@@ -387,6 +387,83 @@ function extractInvoiceProjectIds(record) {
   return dedupeStrings(ids);
 }
 
+function buildProjectLookup(projects) {
+  const rows = Array.isArray(projects) ? projects : [];
+  const byId = new Map();
+  const byCanonicalName = new Map();
+  rows.forEach((project) => {
+    if (!project || typeof project !== "object") {
+      return;
+    }
+    const id = pickFirst(project.id);
+    const name = pickFirst(project.name);
+    if (id) {
+      byId.set(id, project);
+    }
+    if (name) {
+      const key = canonicalProjectName(name);
+      if (key && !byCanonicalName.has(key)) {
+        byCanonicalName.set(key, project);
+      }
+    }
+  });
+  return { byId, byCanonicalName };
+}
+
+function resolveProjectForInvoice(record, projectLookup) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+  const lookup = projectLookup || { byId: new Map(), byCanonicalName: new Map() };
+  const projectIds = dedupeStrings(
+    extractInvoiceProjectIds(record).concat([
+      pickFirst(record.projectId || record.projectID),
+      pickFirst(
+        record.project &&
+          (record.project.projectId ||
+            record.project.id ||
+            record.project.projectID)
+      ),
+    ])
+  );
+  for (let i = 0; i < projectIds.length; i += 1) {
+    const id = projectIds[i];
+    if (id && lookup.byId.has(id)) {
+      return lookup.byId.get(id);
+    }
+  }
+
+  const mappings = Array.isArray(record.invoiceToSourceMappings)
+    ? record.invoiceToSourceMappings
+    : [];
+  for (let i = 0; i < mappings.length; i += 1) {
+    const mapping = mappings[i] || {};
+    const mappedProject = normalizeProject(mapping.project || mapping.sourceProject);
+    if (mappedProject) {
+      return mappedProject;
+    }
+    const mappedName = pickFirst(
+      (mapping.project && (mapping.project.projectName || mapping.project.name)) ||
+        mapping.projectName
+    );
+    const canonicalName = canonicalProjectName(mappedName);
+    if (canonicalName && lookup.byCanonicalName.has(canonicalName)) {
+      return lookup.byCanonicalName.get(canonicalName);
+    }
+  }
+
+  const directProject = normalizeProject(record.project);
+  if (directProject) {
+    return directProject;
+  }
+  const directName = pickFirst(record.projectName || record.projectTitle);
+  const directCanonical = canonicalProjectName(directName);
+  if (directCanonical && lookup.byCanonicalName.has(directCanonical)) {
+    return lookup.byCanonicalName.get(directCanonical);
+  }
+  return null;
+}
+
 async function resolveInvoiceIdForPreview(
   baseUrl,
   headers,
@@ -597,6 +674,22 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   if (!record || typeof record !== "object") {
     return null;
   }
+  const projectInfo =
+    project && typeof project === "object"
+      ? project
+      : {
+          id: "",
+          name: "",
+          accountName: "",
+          ownerName: "",
+          ownerEmail: "",
+          ownerUserId: "",
+          memberEmails: [],
+          memberUserIds: [],
+          contractName: "",
+          hub: "",
+          program: "",
+        };
 
   const invoiceNumber =
     pickFirst(
@@ -684,20 +777,20 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   ]);
 
   const projectUserIds = dedupeStrings([
-    project && project.ownerUserId,
-  ].concat((project && project.memberUserIds) || []));
+    projectInfo.ownerUserId,
+  ].concat(projectInfo.memberUserIds || []));
   const projectEmails = dedupeStrings([
-    normalizeEmail(project && project.ownerEmail),
-  ].concat((project && project.memberEmails) || []));
+    normalizeEmail(projectInfo.ownerEmail),
+  ].concat(projectInfo.memberEmails || []));
   const customFieldValues = extractNamedCustomFieldValues(record.fields);
   const lineItems = collectInvoiceLineItems(record);
   const quantityHours = sumLineItemQuantity(lineItems);
   const contractName = compactJoined(
-    customFieldValues.contractName.concat([project && project.contractName])
+    customFieldValues.contractName.concat([projectInfo.contractName])
   );
-  const hub = compactJoined(customFieldValues.hub.concat([project && project.hub]));
+  const hub = compactJoined(customFieldValues.hub.concat([projectInfo.hub]));
   const program = compactJoined(
-    customFieldValues.program.concat([project && project.program])
+    customFieldValues.program.concat([projectInfo.program])
   );
   const createdByName = fullName(record.createdBy) || pickFirst(record.createdByName);
 
@@ -714,7 +807,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
           record.documentId ||
           record.fileId ||
           record.invoiceNumber
-      ) || `${project.id || project.name}-${invoiceNumber || invoiceName}`,
+      ) || `${projectInfo.id || projectInfo.name || "invoice"}-${invoiceNumber || invoiceName}`,
     invoiceNumber: invoiceNumber || `INV-${Math.random().toString(16).slice(2, 8).toUpperCase()}`,
     invoiceId: pickFirst(record.invoiceId || record.id || record._id),
     invoiceName,
@@ -727,7 +820,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
         fullName(record.createdBy) ||
         fullName(record.owner) ||
         (record.owner && record.owner.name)
-    ) || project.ownerName || "Unassigned",
+    ) || projectInfo.ownerName || "Unassigned",
     accountName:
       pickFirst(
         record.accountName ||
@@ -736,7 +829,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
           (record.account && record.account.name) ||
           (record.customer && (record.customer.companyName || record.customer.name))
       ) ||
-      project.accountName ||
+      projectInfo.accountName ||
       fallbackAccountName ||
       "Rocketlane Account",
     invoiceDate,
@@ -754,8 +847,8 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     quantityHours,
     associatedEmails: dedupeStrings(associatedEmails.concat(projectEmails)),
     associatedUserIds: dedupeStrings(associatedUserIds.concat(projectUserIds)),
-    sourceProjectId: project.id || "",
-    sourceProjectName: project.name,
+    sourceProjectId: projectInfo.id || "",
+    sourceProjectName: projectInfo.name || "",
   };
 }
 
@@ -1037,10 +1130,6 @@ function deriveViewerAccess(request, context) {
 
 module.exports = {
   syncInvoicesFromSource: async (request = {}, context = {}) => {
-    const sourceProjectNames = Array.isArray(request.sourceProjectNames)
-      ? request.sourceProjectNames.filter(Boolean)
-      : DEFAULT_SOURCE_PROJECTS;
-
     const installation = context.installation || {};
     const iParams = installation.iparams || {};
     const secureParams = installation.secureParams || {};
@@ -1094,6 +1183,7 @@ module.exports = {
       projectErrors: [],
       invoiceErrors: [],
       memberErrors: [],
+      invoiceFetchMode: "account-wide-invoices-type-all",
       workspaceUsed: "",
       apiBaseUsed: "",
       hasApiToken: Boolean(apiToken),
@@ -1203,59 +1293,35 @@ module.exports = {
       diagnostics.projectErrors.push(...projectsResult.errors);
       const allProjects = projectsResult.rows
         .map(normalizeProject)
-        .filter(Boolean)
-        .filter((project) => isSourceProjectName(project.name, sourceProjectNames));
-
-      if (!allProjects.length) {
-        continue;
-      }
+        .filter(Boolean);
+      const projectLookup = buildProjectLookup(allProjects);
 
       const allInvoicesResult = await requestCollection(
         baseUrl,
         headers,
-        ["/api/1.0/invoices"],
+        [
+          "/api/v1/invoices?type=all",
+          "/api/1.0/invoices?type=all",
+          "/api/1.0/invoices",
+          "/api/v1/invoices",
+        ],
         ["invoices", "data", "content", "results", "items"]
       );
       diagnostics.invoiceErrors.push(...allInvoicesResult.errors);
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
-      for (let i = 0; i < allProjects.length; i += 1) {
-        const project = allProjects[i];
-        const scopedInvoices = globalInvoices.filter((row) =>
-          invoiceBelongsToProject(row, project)
+      globalInvoices.forEach((row) => {
+        const project = resolveProjectForInvoice(row, projectLookup);
+        const normalized = normalizeInvoiceRecord(
+          row,
+          project,
+          request.accountName || iParams.accountName || ""
         );
-        scopedInvoices.forEach((row) => {
-          const normalized = normalizeInvoiceRecord(
-            row,
-            project,
-            request.accountName || iParams.accountName || ""
-          );
-          if (normalized) {
-            collectedInvoices.push(normalized);
-          }
-        });
-
-        if (project.id) {
-          const fileResult = await requestCollection(
-            baseUrl,
-            headers,
-            [`/api/1.0/projects/${encodeURIComponent(project.id)}/files`],
-            ["files", "data", "content", "results", "items"]
-          );
-          diagnostics.invoiceErrors.push(...fileResult.errors);
-          fileResult.rows.forEach((row) => {
-            const normalized = normalizeInvoiceRecord(
-              row,
-              project,
-              request.accountName || iParams.accountName || ""
-            );
-            if (normalized) {
-              collectedInvoices.push(normalized);
-            }
-          });
+        if (normalized) {
+          collectedInvoices.push(normalized);
         }
-      }
+      });
 
       const membersResult = await requestCollection(
         baseUrl,
@@ -1266,10 +1332,12 @@ module.exports = {
       diagnostics.memberErrors.push(...membersResult.errors);
       const normalizedMembers = membersResult.rows.map(normalizeMember).filter(Boolean);
 
-      if (allProjects.length || collectedInvoices.length || normalizedMembers.length) {
+      if (allProjects.length || globalInvoices.length || normalizedMembers.length) {
         diagnostics.workspaceUsed = workspaceCandidates[0] || "";
         diagnostics.apiBaseUsed = baseUrl;
-        sourceProjects = allProjects;
+        sourceProjects = dedupeStrings(
+          collectedInvoices.map((invoice) => pickFirst(invoice && invoice.sourceProjectName))
+        );
         invoices = collectedInvoices;
         members = normalizedMembers;
         break;

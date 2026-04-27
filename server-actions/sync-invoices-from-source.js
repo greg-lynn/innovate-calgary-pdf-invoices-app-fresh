@@ -220,6 +220,35 @@ function extractFieldDisplayEntries(fields) {
   return entries;
 }
 
+function mergeFieldDisplayEntries(primary, secondary) {
+  const result = [];
+  const seen = new Set();
+  const pushEntries = (entries) => {
+    if (!Array.isArray(entries)) {
+      return;
+    }
+    entries.forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      const label = pickFirst(entry.label);
+      const value = pickFirst(entry.value);
+      if (!label || !value) {
+        return;
+      }
+      const key = `${normalizeFieldLabel(label)}|${value}`;
+      if (seen.has(key)) {
+        return;
+      }
+      seen.add(key);
+      result.push({ label, value });
+    });
+  };
+  pushEntries(primary);
+  pushEntries(secondary);
+  return result;
+}
+
 function compactJoined(values) {
   return dedupeStrings((Array.isArray(values) ? values : []).map((value) => pickFirst(value))).join(
     ", "
@@ -732,7 +761,8 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
 
   const invoiceNumber =
     pickFirst(
-      record.invoiceNumber ||
+      buildInvoiceDisplayNumber(record) ||
+        record.invoiceNumber ||
         record.invoiceNo ||
         record.invoiceId ||
         record.billNumber ||
@@ -1259,10 +1289,18 @@ module.exports = {
           if (!previewInvoiceId) {
             throw new Error("Invoice ID could not be resolved for preview.");
           }
-          const invoicePayload = await requestJson(
-            ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}`),
-            headers
-          );
+          let invoicePayload = null;
+          try {
+            invoicePayload = await requestJson(
+              ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}`),
+              headers
+            );
+          } catch (_error) {
+            invoicePayload = await requestJson(
+              ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}`),
+              headers
+            );
+          }
           const linePayload = await requestJson(
             ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}/lines`),
             headers
@@ -1342,9 +1380,9 @@ module.exports = {
         headers,
         [
           "/api/v1/invoices?type=all",
+          "/api/v1/invoices",
           "/api/1.0/invoices?type=all",
           "/api/1.0/invoices",
-          "/api/v1/invoices",
         ],
         ["invoices", "data", "content", "results", "items"]
       );

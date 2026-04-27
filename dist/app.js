@@ -3137,7 +3137,7 @@
     const cacheKey = String(invoice.id || invoice.invoiceId || invoice.invoiceNumber || "");
     try {
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
-      if (cached && cached.pdfDataUrl) {
+      if (cached && cached.pdfDataUrl && cached.isNativePdf) {
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(cached.pdfDataUrl);
@@ -3152,6 +3152,7 @@
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,
             pdfDataUrl: generatedPdfDataUrl,
+            isNativePdf: true,
           };
         }
         refs.modalPdfFrame.classList.remove("hidden");
@@ -3167,12 +3168,7 @@
       }
       const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
       if (pdfDataUrl) {
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: preview || null,
-            pdfDataUrl,
-          };
-        }
+        // Do not persist fallback PDFs in cache; allow future native preview retries.
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(pdfDataUrl);
@@ -3454,7 +3450,7 @@
   }
 
   function formatPdfDate(value) {
-    const timestamp = new Date(value).getTime();
+    const timestamp = tryParseDateAsLocal(value).getTime();
     if (Number.isNaN(timestamp)) {
       return "Unknown";
     }
@@ -4586,7 +4582,7 @@
     if (!value) {
       return "Unknown";
     }
-    const timestamp = new Date(value).getTime();
+    const timestamp = tryParseDateAsLocal(value).getTime();
     if (Number.isNaN(timestamp)) {
       return "Unknown";
     }
@@ -4644,8 +4640,23 @@
   }
 
   function timestampValue(value) {
-    const timestamp = new Date(value).getTime();
+    const timestamp = tryParseDateAsLocal(value).getTime();
     return Number.isNaN(timestamp) ? 0 : timestamp;
+  }
+
+  function tryParseDateAsLocal(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return new Date(NaN);
+    }
+    const simpleDate = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:$|T00:00:00(?:\.000)?Z?$)/);
+    if (simpleDate) {
+      const year = Number(simpleDate[1]);
+      const month = Number(simpleDate[2]);
+      const day = Number(simpleDate[3]);
+      return new Date(year, month - 1, day);
+    }
+    return new Date(text);
   }
 
   function slug(value) {

@@ -181,6 +181,45 @@ function extractNamedCustomFieldValues(fields) {
   return output;
 }
 
+function extractFieldDisplayEntries(fields) {
+  if (!Array.isArray(fields)) {
+    return [];
+  }
+  const entries = [];
+  const seen = new Set();
+  fields.forEach((field) => {
+    if (!field || typeof field !== "object") {
+      return;
+    }
+    const label = pickFirst(
+      field.fieldLabel || field.fieldName || field.label || field.name || field.key
+    );
+    if (!label) {
+      return;
+    }
+    const value = toFieldText(
+      pickFirst(
+        field.fieldValueLabel ||
+          field.fieldValue ||
+          field.displayValue ||
+          field.value ||
+          (field.metaFieldValue &&
+            (field.metaFieldValue.label || field.metaFieldValue.value))
+      ) || field.values
+    );
+    if (!value) {
+      return;
+    }
+    const dedupeKey = `${normalizeFieldLabel(label)}|${value}`;
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+    entries.push({ label, value });
+  });
+  return entries;
+}
+
 function compactJoined(values) {
   return dedupeStrings((Array.isArray(values) ? values : []).map((value) => pickFirst(value))).join(
     ", "
@@ -895,6 +934,7 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
     billToEmail: normalizeEmail(
       pickFirst(createdBy && (createdBy.email || createdBy.emailId || createdBy.userEmail))
     ),
+    customFields: extractFieldDisplayEntries(invoiceRecord && invoiceRecord.fields),
     lineItems: Array.isArray(lineRecords)
       ? lineRecords.map((line) => ({
           id: pickFirst(line && (line.invoiceLineItemId || line.id || line._id)),
@@ -902,6 +942,7 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
           quantity: normalizeAmount(line && line.quantity),
           unitPrice: normalizeAmount(line && line.unitPrice),
           amount: normalizeAmount(line && line.amount),
+          fields: extractFieldDisplayEntries(line && line.fields),
         }))
       : [],
     payments: Array.isArray(paymentRecords)

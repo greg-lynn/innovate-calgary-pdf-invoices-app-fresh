@@ -1071,26 +1071,19 @@
       state.syncDiagnostics = mergeObjects(state.syncDiagnostics, {
         serverActionAttempted: true,
       });
-      const workspaceCandidates = ["https://innovate-calgary.rocketlane.com"];
-      const accountDomain = pickFirst(
-        state.rawAccount &&
-          (state.rawAccount.domainName ||
-            state.rawAccount.primaryDomainName ||
-            state.rawAccount.domain)
-      );
-      if (accountDomain) {
-        workspaceCandidates.unshift("https://" + accountDomain.replace(/^https?:\/\//i, ""));
-      }
+      const workspaceCandidates = getWorkspaceCandidates();
+      const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
-        workspaceBaseUrl: workspaceCandidates[0],
+        workspaceBaseUrl,
         workspaceCandidates,
         viewerContext: {
           userId: state.context.userId || "",
           userEmail: state.context.userEmail || "",
           userRole: state.context.userRole || "",
           userName: state.context.userName || "",
+          workspaceBaseUrl,
         },
       });
       const result = unwrapServerActionResponse(payload);
@@ -3107,11 +3100,12 @@
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
+    const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
     try {
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
-        workspaceBaseUrl: workspaceCandidates[0],
+        workspaceBaseUrl,
         workspaceCandidates,
         searchQuery,
         searchOnly: true,
@@ -3192,7 +3186,11 @@
   }
 
   function getWorkspaceCandidates() {
-    const candidates = ["https://innovate-calgary.rocketlane.com"];
+    const candidates = [];
+    const runtimeWorkspace = getCurrentWorkspaceBaseUrl();
+    if (runtimeWorkspace) {
+      candidates.push(runtimeWorkspace);
+    }
     const accountDomain = pickFirst(
       state.rawAccount &&
         (state.rawAccount.domainName ||
@@ -3203,6 +3201,23 @@
       candidates.unshift("https://" + accountDomain.replace(/^https?:\/\//i, ""));
     }
     return dedupeStrings(candidates);
+  }
+
+  function getCurrentWorkspaceBaseUrl() {
+    try {
+      const origin = String((window.location && window.location.origin) || "").trim();
+      if (!origin) {
+        return "";
+      }
+      const parsed = new URL(origin);
+      const host = String(parsed.hostname || "").toLowerCase();
+      if (!host.endsWith("rocketlane.com")) {
+        return "";
+      }
+      return `${parsed.protocol}//${parsed.host}`.replace(/\/+$/, "");
+    } catch (_error) {
+      return "";
+    }
   }
 
   function resolveNativeInvoiceDownloadUrl(invoice) {
@@ -3479,10 +3494,11 @@
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
+    const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
     const payload = await state.client.data.invoke("syncInvoicesFromSource", {
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
-      workspaceBaseUrl: workspaceCandidates[0],
+      workspaceBaseUrl,
       workspaceCandidates,
       previewInvoiceId,
       previewInvoiceNumber,

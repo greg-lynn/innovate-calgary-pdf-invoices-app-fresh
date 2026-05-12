@@ -4,6 +4,7 @@ const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 // Production override: embed API key here so app works without installer prompt.
 // Replace before shipping to users if needed.
 const EMBEDDED_ROCKETLANE_API_KEY = "rl-7e0f30b5-1aab-4faf-837c-6a3ec5cbfde7";
+const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
 
 function normalizeProjectName(value) {
@@ -336,6 +337,35 @@ function ensureAbsoluteUrl(baseUrl, path) {
   } catch (_error) {
     return "";
   }
+}
+
+function workspaceHost(value) {
+  const text = pickFirst(value);
+  if (!text) {
+    return "";
+  }
+  try {
+    return String(new URL(text).hostname || "").toLowerCase();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function canUseEmbeddedToken(request, workspaceCandidates) {
+  const targetHost = String(EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE || "").toLowerCase();
+  if (!targetHost) {
+    return false;
+  }
+  const runtimeWorkspaceHost = workspaceHost(
+    (request && request.viewerContext && request.viewerContext.workspaceBaseUrl) ||
+      (request && request.workspaceBaseUrl)
+  );
+  if (runtimeWorkspaceHost) {
+    return runtimeWorkspaceHost === targetHost;
+  }
+  return (Array.isArray(workspaceCandidates) ? workspaceCandidates : [])
+    .map((candidate) => workspaceHost(candidate))
+    .some((host) => host === targetHost);
 }
 
 function extractCollection(payload, preferredKeys) {
@@ -1207,22 +1237,30 @@ module.exports = {
     const workspaceCandidates = dedupeStrings([
       request.workspaceBaseUrl,
       ...(Array.isArray(request.workspaceCandidates) ? request.workspaceCandidates : []),
+      request.viewerContext && request.viewerContext.workspaceBaseUrl,
       iParams.workspaceBaseUrl,
       iParams.workspaceUrl,
       secureParams.workspaceBaseUrl,
       secureParams.workspaceUrl,
-      "https://innovate-calgary.rocketlane.com",
     ]);
-    const apiToken =
-      EMBEDDED_ROCKETLANE_API_KEY ||
-      request.apiToken ||
-      secureParams.rocketlaneApiToken ||
-      secureParams.apiToken ||
-      secureParams.apiKey ||
-      iParams.rocketlaneApiToken ||
-      iParams.apiToken ||
-      context.apiKey ||
-      "";
+    const tokenCandidates = [
+      { value: request.apiToken, source: "request.apiToken" },
+      {
+        value:
+          secureParams.rocketlaneApiToken || secureParams.apiToken || secureParams.apiKey,
+        source: "installation.secureParams",
+      },
+      {
+        value: iParams.rocketlaneApiToken || iParams.apiToken,
+        source: "installation.iparams",
+      },
+      { value: context.apiKey, source: "context.apiKey" },
+    ];
+    if (canUseEmbeddedToken(request, workspaceCandidates)) {
+      tokenCandidates.push({ value: EMBEDDED_ROCKETLANE_API_KEY, source: "embedded" });
+    }
+    const selectedToken = tokenCandidates.find((candidate) => pickFirst(candidate.value));
+    const apiToken = selectedToken ? pickFirst(selectedToken.value) : "";
 
     const apiBaseCandidates = dedupeStrings([
       request.apiBaseUrl,
@@ -1257,17 +1295,7 @@ module.exports = {
       workspaceUsed: "",
       apiBaseUsed: "",
       hasApiToken: Boolean(apiToken),
-      tokenSource: EMBEDDED_ROCKETLANE_API_KEY
-        ? "embedded"
-        : request.apiToken
-        ? "request.apiToken"
-        : secureParams.rocketlaneApiToken || secureParams.apiToken || secureParams.apiKey
-        ? "installation.secureParams"
-        : iParams.rocketlaneApiToken || iParams.apiToken
-        ? "installation.iparams"
-        : context.apiKey
-        ? "context.apiKey"
-        : "none",
+      tokenSource: selectedToken ? selectedToken.source : "none",
       contextUserKeys: context && context.user ? Object.keys(context.user) : [],
       searchQuery: normalizedSearchQuery,
     };

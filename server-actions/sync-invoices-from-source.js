@@ -1159,11 +1159,7 @@ function isAdminToken(text) {
   if (!value) {
     return false;
   }
-  return (
-    /(^|\b)(account|workspace|company)\s*admin(istrator)?(\b|$)/.test(value) ||
-    /(^|\b)(account|workspace|company)\s*owner(\b|$)/.test(value) ||
-    /(^|\b)admin(\b|$)/.test(value)
-  );
+  return /(^|\b)account\s*admin(istrator)?(\b|$)/.test(value);
 }
 
 function deriveViewerAccess(request, context) {
@@ -1187,12 +1183,17 @@ function deriveViewerAccess(request, context) {
       ctxUser.name || ctxUser.displayName || ctxUser.userName || viewerContext.userName
     );
   const permission = pickFirst(
-    ctxUser.permission ||
+    (ctxUser.permission &&
+      (ctxUser.permission.permissionName || ctxUser.permission.name)) ||
+      ctxUser.permission ||
       ctxUser.permissionSet ||
       (ctxUser.permissionSet && ctxUser.permissionSet.name) ||
       (ctxUser.permissionSetObj && ctxUser.permissionSetObj.name) ||
       ctxUser.accountPermission ||
-      (ctxUser.accountPermissionSet && ctxUser.accountPermissionSet.name)
+      (ctxUser.accountPermissionSet && ctxUser.accountPermissionSet.name) ||
+      (viewerContext.permission &&
+        (viewerContext.permission.permissionName || viewerContext.permission.name)) ||
+      viewerContext.permission
   );
   const roleLabel = pickFirst(
     ctxUser.role ||
@@ -1203,21 +1204,7 @@ function deriveViewerAccess(request, context) {
       viewerContext.userRole
   );
 
-  const tokens = [];
-  collectRoleTokens(ctxUser, tokens, 0);
-  collectRoleTokens(ctxAccount, tokens, 0);
-  collectRoleTokens(viewerContext, tokens, 0);
-  const uniqueTokens = dedupeStrings(tokens);
-  const tokenText = uniqueTokens.join(" ");
-  const isAdmin = Boolean(
-    ctxUser.isAdmin === true ||
-      ctxUser.admin === true ||
-      ctxUser.isAccountAdmin === true ||
-      ctxUser.accountAdmin === true ||
-      isAdminToken(permission) ||
-      isAdminToken(roleLabel) ||
-      isAdminToken(tokenText)
-  );
+  const isAdmin = isAdminToken(permission);
 
   return {
     id,

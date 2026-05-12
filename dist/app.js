@@ -1083,6 +1083,7 @@
           userEmail: state.context.userEmail || "",
           userRole: state.context.userRole || "",
           userName: state.context.userName || "",
+          permission: state.access.permission || "",
           workspaceBaseUrl,
         },
       });
@@ -3109,6 +3110,14 @@
         workspaceCandidates,
         searchQuery,
         searchOnly: true,
+        viewerContext: {
+          userId: state.context.userId || "",
+          userEmail: state.context.userEmail || "",
+          userRole: state.context.userRole || "",
+          userName: state.context.userName || "",
+          permission: state.access.permission || "",
+          workspaceBaseUrl,
+        },
       });
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
@@ -3503,6 +3512,14 @@
       previewInvoiceId,
       previewInvoiceNumber,
       previewSourceProjectId: pickFirst(invoice.sourceProjectId || ""),
+      viewerContext: {
+        userId: state.context.userId || "",
+        userEmail: state.context.userEmail || "",
+        userRole: state.context.userRole || "",
+        userName: state.context.userName || "",
+        permission: state.access.permission || "",
+        workspaceBaseUrl,
+      },
     });
     const result = unwrapServerActionResponse(payload);
     if (!result || result.ok === false) {
@@ -4292,12 +4309,12 @@
       (permissionHint && permissionHint.permission) || extractPermissionLabel(rawUser);
     const roleLabelHint =
       (permissionHint && permissionHint.roleLabel) || extractRoleLabel(rawUser) || context.userRole;
-    const permissionRole = normalizePermissionRole(permissionLabel || roleLabelHint);
+    const permissionRole = normalizePermissionRole(permissionLabel);
     const inferredRole = inferRole(rawUser, rawAccount, context.userRole);
-    const forcedAdmin = Boolean(permissionHint && permissionHint.isAdmin === true);
-    const role = forcedAdmin ? "admin" : permissionRole || inferredRole || "non_admin";
-    const permissionValue = permissionLabel || roleLabelHint || "";
-    const isAdmin = role === "admin";
+    const permissionValue = permissionLabel || "";
+    const isAdmin = permissionRole === "admin";
+    const fallbackRole = normalizeRole(roleLabelHint) || inferredRole || "non_admin";
+    const role = isAdmin ? "admin" : fallbackRole === "admin" ? "non_admin" : fallbackRole;
     const roleLabel = resolveRoleLabel(role, { permission: permissionValue });
 
     return {
@@ -4385,12 +4402,7 @@
     if (!text) {
       return "";
     }
-    if (
-      text.includes("account admin") ||
-      text.includes("workspace admin") ||
-      text.includes("owner") ||
-      text === "admin"
-    ) {
+    if (/(^|\b)account\s*admin(istrator)?(\b|$)/.test(text)) {
       return "admin";
     }
     return "non_admin";
@@ -4404,14 +4416,7 @@
     if (!text) {
       return false;
     }
-    return (
-      text.includes("account admin") ||
-      text.includes("workspace admin") ||
-      text.includes("account owner") ||
-      text.includes("workspace owner") ||
-      text.includes("company owner") ||
-      text === "admin"
-    );
+    return /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text);
   }
 
   function collectRoleTokens(value, target, depth) {

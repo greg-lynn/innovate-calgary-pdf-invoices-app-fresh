@@ -1211,7 +1211,6 @@ module.exports = {
       iParams.workspaceUrl,
       secureParams.workspaceBaseUrl,
       secureParams.workspaceUrl,
-      "https://blink.rocketlane.com",
       "https://innovate-calgary.rocketlane.com",
     ]);
     const apiToken =

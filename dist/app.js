@@ -1071,10 +1071,7 @@
       state.syncDiagnostics = mergeObjects(state.syncDiagnostics, {
         serverActionAttempted: true,
       });
-      const workspaceCandidates = [
-        "https://blink.rocketlane.com",
-        "https://innovate-calgary.rocketlane.com",
-      ];
+      const workspaceCandidates = ["https://innovate-calgary.rocketlane.com"];
       const accountDomain = pickFirst(
         state.rawAccount &&
           (state.rawAccount.domainName ||
@@ -3195,10 +3192,7 @@
   }
 
   function getWorkspaceCandidates() {
-    const candidates = [
-      "https://blink.rocketlane.com",
-      "https://innovate-calgary.rocketlane.com",
-    ];
+    const candidates = ["https://innovate-calgary.rocketlane.com"];
     const accountDomain = pickFirst(
       state.rawAccount &&
         (state.rawAccount.domainName ||

@@ -1191,6 +1191,19 @@ function deriveViewerAccess(request, context) {
       (ctxUser.permissionSetObj && ctxUser.permissionSetObj.name) ||
       ctxUser.accountPermission ||
       (ctxUser.accountPermissionSet && ctxUser.accountPermissionSet.name) ||
+      (Array.isArray(ctxUser.permissions) &&
+        ctxUser.permissions
+          .map((entry) =>
+            pickFirst(
+              entry &&
+                (entry.permissionName ||
+                  entry.name ||
+                  entry.permission ||
+                  entry.label)
+            )
+          )
+          .filter(Boolean)
+          .join(", ")) ||
       (viewerContext.permission &&
         (viewerContext.permission.permissionName || viewerContext.permission.name)) ||
       viewerContext.permission

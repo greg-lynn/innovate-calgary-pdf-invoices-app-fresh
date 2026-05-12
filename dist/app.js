@@ -959,10 +959,23 @@
 
     const permission = extractPermissionLabel(raw);
     const roleLabel = extractRoleLabel(raw);
+    const name = pickFirst(
+      raw.name ||
+        raw.displayName ||
+        raw.fullName ||
+        raw.userName ||
+        (raw.user &&
+          (raw.user.name ||
+            raw.user.displayName ||
+            raw.user.fullName ||
+            raw.user.userName)) ||
+        [pickFirst(raw.firstName), pickFirst(raw.lastName)].filter(Boolean).join(" ")
+    );
 
     return {
       id,
       email,
+      name,
       permission,
       roleLabel,
       isAdmin: Boolean(
@@ -985,6 +998,19 @@
     const targetId = pickFirst(
       (rawUser && (rawUser.id || rawUser.userId || rawUser._id)) || context.userId
     );
+    const targetName = canonicalIdentityName(
+      pickFirst(
+        (rawUser &&
+          (rawUser.name ||
+            rawUser.displayName ||
+            rawUser.fullName ||
+            rawUser.userName ||
+            [pickFirst(rawUser.firstName), pickFirst(rawUser.lastName)]
+              .filter(Boolean)
+              .join(" "))) ||
+          context.userName
+      )
+    );
 
     if (targetEmail) {
       const byEmail = members.find((member) => member.email === targetEmail);
@@ -1000,7 +1026,31 @@
       }
     }
 
+    if (targetName) {
+      const byName = members.find((member) => {
+        const memberName = canonicalIdentityName(member && member.name);
+        if (!memberName) {
+          return false;
+        }
+        return (
+          memberName === targetName ||
+          memberName.includes(targetName) ||
+          targetName.includes(memberName)
+        );
+      });
+      if (byName) {
+        return byName;
+      }
+    }
+
     return null;
+  }
+
+  function canonicalIdentityName(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
   }
 
   async function refreshInvoicesFromSource() {
@@ -1083,7 +1133,10 @@
           userEmail: state.context.userEmail || "",
           userRole: state.context.userRole || "",
           userName: state.context.userName || "",
-          permission: state.access.permission || "",
+          permission:
+            (state.permissionHint && state.permissionHint.permission) ||
+            state.access.permission ||
+            "",
           workspaceBaseUrl,
         },
       });
@@ -1124,7 +1177,7 @@
             state.context,
             permissionHint
           );
-          state.permissionHint = permissionHint;
+          state.permissionHint = mergePermissionHints(state.permissionHint, permissionHint);
           // Never demote an already-detected admin using a weaker hint payload.
           if (!state.access.isAdmin || nextAccess.isAdmin) {
             state.access = nextAccess;
@@ -1152,7 +1205,7 @@
           viewerHint.id = pickFirst(result.viewer.id || result.viewer.userId || result.viewer._id);
         }
         if (hasPermissionSignals(viewerHint)) {
-          state.permissionHint = mergeObjects(state.permissionHint || {}, viewerHint);
+          state.permissionHint = mergePermissionHints(state.permissionHint, viewerHint);
           const nextAccess = deriveAccessProfile(
             state.rawUser,
             state.rawAccount,
@@ -3115,7 +3168,10 @@
           userEmail: state.context.userEmail || "",
           userRole: state.context.userRole || "",
           userName: state.context.userName || "",
-          permission: state.access.permission || "",
+          permission:
+            (state.permissionHint && state.permissionHint.permission) ||
+            state.access.permission ||
+            "",
           workspaceBaseUrl,
         },
       });
@@ -3517,7 +3573,10 @@
         userEmail: state.context.userEmail || "",
         userRole: state.context.userRole || "",
         userName: state.context.userName || "",
-        permission: state.access.permission || "",
+        permission:
+          (state.permissionHint && state.permissionHint.permission) ||
+          state.access.permission ||
+          "",
         workspaceBaseUrl,
       },
     });
@@ -4309,9 +4368,11 @@
       (permissionHint && permissionHint.permission) || extractPermissionLabel(rawUser);
     const roleLabelHint =
       (permissionHint && permissionHint.roleLabel) || extractRoleLabel(rawUser) || context.userRole;
-    const permissionRole = normalizePermissionRole(permissionLabel);
+    const effectivePermissionLabel =
+      permissionLabel || (isLikelyAdminLabel(roleLabelHint) ? roleLabelHint : "");
+    const permissionRole = normalizePermissionRole(effectivePermissionLabel);
     const inferredRole = inferRole(rawUser, rawAccount, context.userRole);
-    const permissionValue = permissionLabel || "";
+    const permissionValue = effectivePermissionLabel || "";
     const isAdmin = permissionRole === "admin";
     const fallbackRole = normalizeRole(roleLabelHint) || inferredRole || "non_admin";
     const role = isAdmin ? "admin" : fallbackRole === "admin" ? "non_admin" : fallbackRole;
@@ -4324,6 +4385,19 @@
       email,
       displayName,
       permission: permissionValue,
+    };
+  }
+
+  function mergePermissionHints(baseHint, nextHint) {
+    const base = baseHint && typeof baseHint === "object" ? baseHint : {};
+    const next = nextHint && typeof nextHint === "object" ? nextHint : {};
+    return {
+      id: pickFirst(next.id || base.id),
+      email: normalizeEmail(pickFirst(next.email || base.email)),
+      name: pickFirst(next.name || base.name),
+      permission: pickFirst(next.permission || base.permission),
+      roleLabel: pickFirst(next.roleLabel || base.roleLabel),
+      isAdmin: Boolean(next.isAdmin === true || base.isAdmin === true),
     };
   }
 

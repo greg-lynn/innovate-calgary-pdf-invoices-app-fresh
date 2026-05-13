@@ -765,21 +765,34 @@
     }
 
     const direct = normalizeTeamMemberFromAny(state.rawUser);
-    if (direct && hasPermissionSignals(direct)) {
-      return direct;
+    let bestHint = direct || null;
+    if (bestHint && pickFirst(bestHint.permission)) {
+      return bestHint;
     }
 
     const permissionPayloadHint = await fetchPermissionMetadataFromSdk(state.client);
     if (permissionPayloadHint) {
-      return mergeObjects(
-        {
-          id: pickFirst((state.rawUser && (state.rawUser.id || state.rawUser.userId || state.rawUser._id)) || state.context.userId),
-          email: normalizeEmail(extractPrimaryEmail(state.rawUser) || state.context.userEmail || ""),
-          permission: "",
-          roleLabel: "",
-        },
-        permissionPayloadHint
+      bestHint = mergePermissionHints(
+        bestHint,
+        mergeObjects(
+          {
+            id: pickFirst(
+              (state.rawUser &&
+                (state.rawUser.id || state.rawUser.userId || state.rawUser._id)) ||
+                state.context.userId
+            ),
+            email: normalizeEmail(
+              extractPrimaryEmail(state.rawUser) || state.context.userEmail || ""
+            ),
+            permission: "",
+            roleLabel: "",
+          },
+          permissionPayloadHint
+        )
       );
+      if (bestHint && pickFirst(bestHint.permission)) {
+        return bestHint;
+      }
     }
 
     try {
@@ -793,11 +806,12 @@
       state.teamMembers = [];
     }
 
-    return resolveCurrentUserPermission(
+    const resolvedFromMembers = resolveCurrentUserPermission(
       state.teamMembers,
       state.rawUser,
       state.context
     );
+    return mergePermissionHints(bestHint, resolvedFromMembers);
   }
 
   async function fetchPermissionMetadataFromSdk(client) {
@@ -1011,6 +1025,7 @@
           context.userName
       )
     );
+    const targetEmailLocalPart = extractEmailLocalPart(targetEmail);
 
     if (targetEmail) {
       const byEmail = members.find((member) => member.email === targetEmail);
@@ -1043,6 +1058,16 @@
       }
     }
 
+    if (targetEmailLocalPart) {
+      const byEmailAlias = members.find((member) => {
+        const memberLocalPart = extractEmailLocalPart(member && member.email);
+        return Boolean(memberLocalPart && memberLocalPart === targetEmailLocalPart);
+      });
+      if (byEmailAlias) {
+        return byEmailAlias;
+      }
+    }
+
     return null;
   }
 
@@ -1051,6 +1076,12 @@
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, " ")
       .trim();
+  }
+
+  function extractEmailLocalPart(value) {
+    const email = normalizeEmail(value);
+    const index = email.indexOf("@");
+    return index > 0 ? email.slice(0, index) : "";
   }
 
   async function refreshInvoicesFromSource() {
@@ -4210,8 +4241,7 @@
       return true;
     }
     const permission = String(hint.permission || "").trim();
-    const roleLabel = String(hint.roleLabel || "").trim();
-    return Boolean(permission || roleLabel);
+    return Boolean(permission);
   }
 
   function ensureSelectedInvoice() {

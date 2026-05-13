@@ -94,7 +94,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "search-preview-20260305";
+  window.__invoiceAccessBuild = "rbac-permission-fallback-20260513c";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4921,26 +4921,88 @@
       return "";
     }
     const source = unwrapTopLevelObject(raw);
+    const candidates = [];
+    const pushCandidate = (value) => {
+      const text = readTextValue(value);
+      if (text) {
+        candidates.push(text);
+      }
+    };
     const permissionsList = Array.isArray(raw.permissions)
       ? raw.permissions
           .map((item) => readTextValue(item))
           .filter(Boolean)
           .join(", ")
       : "";
-    return readTextValue(
+    pushCandidate(
       source.permission ||
         (source.permission && source.permission.permissionName) ||
         (source.permission && source.permission.name) ||
         source.permissionName ||
         source.permissionSet ||
-        (source.permissionSet && source.permissionSet.name) ||
+        (source.permissionSet &&
+          (source.permissionSet.permissionName || source.permissionSet.name)) ||
         source.permissionSetObj ||
+        (source.permissionSetObj &&
+          (source.permissionSetObj.permissionName || source.permissionSetObj.name)) ||
         source.accountPermission ||
-        (source.accountPermission && source.accountPermission.permissionName) ||
+        (source.accountPermission &&
+          (source.accountPermission.permissionName || source.accountPermission.name)) ||
+        source.accountPermissionSet ||
+        (source.accountPermissionSet &&
+          (source.accountPermissionSet.permissionName ||
+            source.accountPermissionSet.name)) ||
         source.access ||
         source.permissions ||
         permissionsList
     );
+    collectPermissionLabelCandidates(source, candidates, 0);
+    collectPermissionLabelCandidates(raw, candidates, 0);
+    const unique = dedupeStrings(candidates);
+    const adminCandidate = unique.find((entry) => isLikelyAdminLabel(entry));
+    return adminCandidate || pickFirst(unique[0]);
+  }
+
+  function collectPermissionLabelCandidates(value, output, depth) {
+    if (depth > 6 || value == null) {
+      return;
+    }
+    if (typeof value === "string" || typeof value === "number") {
+      const text = pickFirst(value);
+      if (text) {
+        output.push(text);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach((item) => collectPermissionLabelCandidates(item, output, depth + 1));
+      return;
+    }
+    if (typeof value !== "object") {
+      return;
+    }
+    if (value.permissionName || value.permission || value.permissionSet || value.accountPermission) {
+      const direct = readTextValue(
+        value.permissionName ||
+          value.permission ||
+          value.permissionSet ||
+          value.accountPermission ||
+          value.accountPermissionSet
+      );
+      if (direct) {
+        output.push(direct);
+      }
+    }
+    Object.keys(value).forEach((key) => {
+      const lowered = String(key || "").toLowerCase();
+      if (
+        lowered.includes("permission") ||
+        lowered.includes("access") ||
+        lowered.includes("role")
+      ) {
+        collectPermissionLabelCandidates(value[key], output, depth + 1);
+      }
+    });
   }
 
   function extractRoleLabel(raw) {

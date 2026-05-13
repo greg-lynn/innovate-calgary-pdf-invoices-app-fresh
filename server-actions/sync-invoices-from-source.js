@@ -1159,7 +1159,11 @@ function isAdminToken(text) {
   if (!value) {
     return false;
   }
-  return /(^|\b)account\s*admin(istrator)?(\b|$)/.test(value);
+  return (
+    /(^|\b)account\s*admin(istrator)?(\b|$)/.test(value) ||
+    value === "admin" ||
+    value === "administrator"
+  );
 }
 
 function deriveViewerAccess(request, context) {

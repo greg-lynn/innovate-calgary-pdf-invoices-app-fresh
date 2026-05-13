@@ -4476,7 +4476,11 @@
     if (!text) {
       return "";
     }
-    if (/(^|\b)account\s*admin(istrator)?(\b|$)/.test(text)) {
+    if (
+      /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text) ||
+      text === "admin" ||
+      text === "administrator"
+    ) {
       return "admin";
     }
     return "non_admin";

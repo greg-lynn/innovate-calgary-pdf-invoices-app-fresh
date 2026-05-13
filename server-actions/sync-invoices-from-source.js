@@ -1500,9 +1500,10 @@ module.exports = {
       },
       { value: context.apiKey, source: "context.apiKey" },
     ];
-    if (canUseEmbeddedToken(request, workspaceCandidates)) {
-      tokenCandidates.push({ value: EMBEDDED_ROCKETLANE_API_KEY, source: "embedded" });
-    }
+    // Always keep embedded token as final fallback so server action
+    // can still run when runtime workspace URL is unavailable/rewritten
+    // by marketplace hosting wrappers.
+    tokenCandidates.push({ value: EMBEDDED_ROCKETLANE_API_KEY, source: "embedded" });
     const selectedToken = tokenCandidates.find((candidate) => pickFirst(candidate.value));
     const apiToken = selectedToken ? pickFirst(selectedToken.value) : "";
 

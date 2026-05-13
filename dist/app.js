@@ -770,6 +770,11 @@
       return bestHint;
     }
 
+    const workspaceApiHint = await fetchPermissionHintFromWorkspaceApi();
+    if (workspaceApiHint && pickFirst(workspaceApiHint.permission)) {
+      return mergePermissionHints(bestHint, workspaceApiHint);
+    }
+
     const permissionPayloadHint = await fetchPermissionMetadataFromSdk(state.client);
     if (permissionPayloadHint) {
       bestHint = mergePermissionHints(
@@ -812,6 +817,76 @@
       state.context
     );
     return mergePermissionHints(bestHint, resolvedFromMembers);
+  }
+
+  async function fetchPermissionHintFromWorkspaceApi() {
+    if (!canUseDirectApiFetch()) {
+      return null;
+    }
+
+    let bestHint = null;
+    const meEndpoints = [
+      "/api/1.0/users/me?includeFields=permission,role,company",
+      "/api/1.0/users/me?includeFields=permission",
+      "/api/1.0/users/me",
+      "/api/v1/users/me",
+      "/api/v1/users/current",
+    ];
+    for (let i = 0; i < meEndpoints.length; i += 1) {
+      try {
+        const payload = await requestJson(meEndpoints[i]);
+        const candidates = [payload];
+        if (payload && typeof payload === "object") {
+          candidates.push(payload.data, payload.response, payload.result, payload.payload);
+          if (payload.user && typeof payload.user === "object") {
+            candidates.push(payload.user);
+          }
+        }
+        for (let j = 0; j < candidates.length; j += 1) {
+          const hint = normalizeTeamMemberFromAny(candidates[j]);
+          if (!hint) {
+            continue;
+          }
+          bestHint = mergePermissionHints(bestHint, hint);
+          if (pickFirst(bestHint && bestHint.permission)) {
+            return bestHint;
+          }
+        }
+      } catch (_error) {
+        // Try next endpoint.
+      }
+    }
+
+    const listEndpoints = [
+      "/api/1.0/users?includeFields=permission,role,company",
+      "/api/1.0/users?includeFields=permission",
+      "/api/1.0/users",
+    ];
+    for (let i = 0; i < listEndpoints.length; i += 1) {
+      try {
+        const payload = await requestJson(listEndpoints[i]);
+        const rows = extractCollection(payload, [
+          "users",
+          "members",
+          "teamMembers",
+          "accountUsers",
+          "account_users",
+          "data",
+          "items",
+          "results",
+        ]);
+        const members = rows.map((row) => normalizeTeamMemberFromAny(row)).filter(Boolean);
+        const resolved = resolveCurrentUserPermission(members, state.rawUser, state.context);
+        bestHint = mergePermissionHints(bestHint, resolved);
+        if (pickFirst(bestHint && bestHint.permission)) {
+          return bestHint;
+        }
+      } catch (_error) {
+        // Try next endpoint.
+      }
+    }
+
+    return bestHint;
   }
 
   async function fetchPermissionMetadataFromSdk(client) {

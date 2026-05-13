@@ -1187,13 +1187,31 @@ function normalizeMember(record) {
         (nestedUser &&
           nestedUser.permission &&
           (nestedUser.permission.permissionName || nestedUser.permission.name)) ||
+        (nestedUser &&
+          nestedUser.permissionSet &&
+          (nestedUser.permissionSet.permissionName || nestedUser.permissionSet.name)) ||
+        (nestedUser &&
+          nestedUser.permissionSetObj &&
+          (nestedUser.permissionSetObj.permissionName || nestedUser.permissionSetObj.name)) ||
+        (nestedUser &&
+          nestedUser.accountPermission &&
+          (nestedUser.accountPermission.permissionName || nestedUser.accountPermission.name)) ||
+        (nestedUser &&
+          nestedUser.accountPermissionSet &&
+          (nestedUser.accountPermissionSet.permissionName ||
+            nestedUser.accountPermissionSet.name)) ||
         record.permission ||
         record.permissionSet ||
-        (record.permissionSet && record.permissionSet.name) ||
-        record.accountPermission ||
-        (record.permissionSetObj && record.permissionSetObj.name) ||
+        (record.permissionSet &&
+          (record.permissionSet.permissionName || record.permissionSet.name)) ||
+        (record.accountPermission &&
+          (record.accountPermission.permissionName || record.accountPermission.name)) ||
+        (record.accountPermissionSet &&
+          (record.accountPermissionSet.permissionName || record.accountPermissionSet.name)) ||
+        (record.permissionSetObj &&
+          (record.permissionSetObj.permissionName || record.permissionSetObj.name)) ||
         permissionList
-    ),
+    ) || extractPermissionFromAny(record),
     roleLabel: pickFirst(
       (record.role && (record.role.roleName || record.role.name)) ||
         (nestedUser &&
@@ -1269,6 +1287,50 @@ function isAdminToken(text) {
   );
 }
 
+function collectPermissionTokens(value, target, depth) {
+  if (depth > 6 || value == null) {
+    return;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const text = pickFirst(value);
+    if (text) {
+      target.push(text);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectPermissionTokens(item, target, depth + 1));
+    return;
+  }
+  if (typeof value !== "object") {
+    return;
+  }
+  Object.keys(value).forEach((key) => {
+    const lowered = String(key || "").toLowerCase();
+    if (
+      lowered.includes("permission") ||
+      lowered.includes("access") ||
+      lowered.includes("role")
+    ) {
+      collectPermissionTokens(value[key], target, depth + 1);
+    }
+  });
+}
+
+function extractPermissionFromAny(record) {
+  if (!record || typeof record !== "object") {
+    return "";
+  }
+  const tokens = [];
+  collectPermissionTokens(record, tokens, 0);
+  const deduped = dedupeStrings(tokens);
+  const adminToken = deduped.find((token) => isAdminToken(token));
+  if (adminToken) {
+    return adminToken;
+  }
+  return pickFirst(deduped[0]);
+}
+
 function deriveViewerAccess(request, context) {
   const ctxUser = (context && context.user) || {};
   const ctxAccount = (context && context.account) || {};
@@ -1294,10 +1356,15 @@ function deriveViewerAccess(request, context) {
       (ctxUser.permission.permissionName || ctxUser.permission.name)) ||
       ctxUser.permission ||
       ctxUser.permissionSet ||
-      (ctxUser.permissionSet && ctxUser.permissionSet.name) ||
-      (ctxUser.permissionSetObj && ctxUser.permissionSetObj.name) ||
-      ctxUser.accountPermission ||
-      (ctxUser.accountPermissionSet && ctxUser.accountPermissionSet.name) ||
+      (ctxUser.permissionSet &&
+        (ctxUser.permissionSet.permissionName || ctxUser.permissionSet.name)) ||
+      (ctxUser.permissionSetObj &&
+        (ctxUser.permissionSetObj.permissionName || ctxUser.permissionSetObj.name)) ||
+      (ctxUser.accountPermission &&
+        (ctxUser.accountPermission.permissionName || ctxUser.accountPermission.name)) ||
+      (ctxUser.accountPermissionSet &&
+        (ctxUser.accountPermissionSet.permissionName ||
+          ctxUser.accountPermissionSet.name)) ||
       (Array.isArray(ctxUser.permissions) &&
         ctxUser.permissions
           .map((entry) =>
@@ -1314,7 +1381,7 @@ function deriveViewerAccess(request, context) {
       (viewerContext.permission &&
         (viewerContext.permission.permissionName || viewerContext.permission.name)) ||
       viewerContext.permission
-  );
+  ) || extractPermissionFromAny(viewerContext) || extractPermissionFromAny(ctxUser);
   const roleLabel = pickFirst(
     ctxUser.role ||
       ctxUser.userRole ||
@@ -1389,7 +1456,11 @@ function resolveViewerFromMembers(baseViewer, members, request) {
   if (!matched) {
     return viewer;
   }
-  const permission = pickFirst(matched.permission || viewer.permission);
+  const permission = pickFirst(
+    matched.permission ||
+      viewer.permission ||
+      (isAdminToken(matched.roleLabel) ? matched.roleLabel : "")
+  );
   const roleLabel = pickFirst(matched.roleLabel || viewer.roleLabel);
   const isAdmin = isAdminToken(permission) || viewer.isAdmin === true;
   return {

@@ -2152,6 +2152,15 @@
         if (payload.data && typeof payload.data === "object") {
           pushIfArray(payload.data[key]);
         }
+        if (payload.response && typeof payload.response === "object") {
+          pushIfArray(payload.response[key]);
+        }
+        if (payload.result && typeof payload.result === "object") {
+          pushIfArray(payload.result[key]);
+        }
+        if (payload.payload && typeof payload.payload === "object") {
+          pushIfArray(payload.payload[key]);
+        }
       }
     });
 

@@ -1178,8 +1178,14 @@
         if (serverInvoices && serverInvoices.length) {
           invoices = serverInvoices;
         } else {
-          state.syncDiagnostics.usedSdkFallback = true;
-          invoices = await fetchInvoicesFromSourceProjects();
+          const directApiInvoices = await fetchInvoicesFromWorkspaceApi();
+          if (directApiInvoices && directApiInvoices.length) {
+            state.syncDiagnostics.usedDirectApiFallback = true;
+            invoices = directApiInvoices;
+          } else {
+            state.syncDiagnostics.usedSdkFallback = true;
+            invoices = await fetchInvoicesFromSourceProjects();
+          }
         }
       }
     } catch (error) {
@@ -1393,6 +1399,109 @@
     }
 
     return dedupeInvoices(invoices);
+  }
+
+  async function fetchInvoicesFromWorkspaceApi() {
+    if (!canUseDirectApiFetch()) {
+      return [];
+    }
+
+    const projectRows = await requestCollection(
+      [
+        "/api/1.0/projects?size=500",
+        "/api/1.0/projects?limit=500",
+        "/api/1.0/projects",
+      ],
+      ["projects", "data", "content", "results", "items"]
+    );
+    const projectById = new Map();
+    projectRows
+      .map((row) => normalizeProjectRecord(row))
+      .filter(Boolean)
+      .forEach((project) => {
+        const key = String(project.id || "").trim();
+        if (key && !projectById.has(key)) {
+          projectById.set(key, project);
+        }
+      });
+
+    const invoiceRows = await requestCollection(
+      [
+        "/api/v1/invoices?type=all",
+        "/api/v1/invoices",
+        "/api/1.0/invoices?type=all",
+        "/api/1.0/invoices",
+      ],
+      ["invoices", "data", "content", "results", "items"]
+    );
+    if (!invoiceRows.length) {
+      return [];
+    }
+
+    const invoices = [];
+    for (let i = 0; i < invoiceRows.length; i += 1) {
+      const row = invoiceRows[i];
+      const project = resolveProjectForApiInvoice(row, projectById);
+      const invoice = await buildInvoiceFromCandidate(row, project, { skipPdfScrub: true });
+      if (invoice) {
+        invoices.push(invoice);
+      }
+    }
+
+    if (invoices.length) {
+      state.sourceProjects = dedupeStrings(
+        invoices.map((invoice) => String(invoice.sourceProjectName || "").trim()).filter(Boolean)
+      );
+    }
+    return dedupeInvoices(invoices);
+  }
+
+  function resolveProjectForApiInvoice(row, projectById) {
+    const direct = normalizeProjectRecord(row && row.project);
+    if (direct) {
+      return direct;
+    }
+    const lookup = projectById instanceof Map ? projectById : new Map();
+    const ids = [];
+    const pushId = (value) => {
+      const text = pickFirst(value);
+      if (text) {
+        ids.push(text);
+      }
+    };
+    pushId(row && row.projectId);
+    pushId(row && row.sourceProjectId);
+    if (row && Array.isArray(row.projects)) {
+      row.projects.forEach((project) => {
+        pushId(project && (project.projectId || project.id || project._id));
+      });
+    }
+    if (row && Array.isArray(row.invoiceToSourceMappings)) {
+      row.invoiceToSourceMappings.forEach((mapping) => {
+        pushId(mapping && (mapping.sourceId || mapping.projectId));
+        pushId(
+          mapping &&
+            mapping.project &&
+            (mapping.project.projectId || mapping.project.id || mapping.project._id)
+        );
+      });
+    }
+    for (let i = 0; i < ids.length; i += 1) {
+      const match = lookup.get(ids[i]);
+      if (match) {
+        return match;
+      }
+    }
+    return (
+      resolveProjectFromArtifact(row) || {
+        id: "",
+        name: pickFirst((row && row.projectName) || (row && row.engagementName)),
+        accountName: state.context.accountName || "Rocketlane Account",
+        ownerName: "Unassigned",
+        ownerEmails: [],
+        raw: row,
+      }
+    );
   }
 
   async function fetchSourceProjects() {
@@ -2268,7 +2377,7 @@
     return false;
   }
 
-  async function buildInvoiceFromCandidate(node, project) {
+  async function buildInvoiceFromCandidate(node, project, options = {}) {
     const pdfUrlRaw = String(
       node.signedUrl ||
         node.downloadUrl ||
@@ -2338,7 +2447,9 @@
       nodeContacts.names[0] ||
       project.ownerName ||
       "Unassigned";
-    const scrubbedEmails = pdfUrl ? await scrubPdfForEmails(pdfUrl, invoiceNumber) : [];
+    const skipPdfScrub = Boolean(options && options.skipPdfScrub);
+    const scrubbedEmails =
+      !skipPdfScrub && pdfUrl ? await scrubPdfForEmails(pdfUrl, invoiceNumber) : [];
     const associatedUserIds = dedupeStrings(
       extractAssociatedUserIds(node).concat(extractAssociatedUserIds(project.raw || {}))
     );

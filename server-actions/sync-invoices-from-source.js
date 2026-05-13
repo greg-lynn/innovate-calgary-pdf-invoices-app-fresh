@@ -668,6 +668,66 @@ async function requestCollection(baseUrl, headers, paths, preferredKeys) {
   return { rows, errors };
 }
 
+function extractViewerCandidate(payload) {
+  if (!payload) {
+    return null;
+  }
+  const objectCandidates = [
+    payload,
+    payload.data,
+    payload.response,
+    payload.result,
+    payload.payload,
+    payload.user,
+    payload.data && payload.data.user,
+    payload.response && payload.response.user,
+  ];
+  for (let i = 0; i < objectCandidates.length; i += 1) {
+    const candidate = objectCandidates[i];
+    if (!candidate) {
+      continue;
+    }
+    if (Array.isArray(candidate)) {
+      for (let j = 0; j < candidate.length; j += 1) {
+        const normalized = normalizeMember(candidate[j]);
+        if (normalized) {
+          return normalized;
+        }
+      }
+      continue;
+    }
+    const normalized = normalizeMember(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return null;
+}
+
+async function requestCurrentViewer(baseUrl, headers) {
+  const paths = [
+    "/api/1.0/users/me?includeFields=permission,role,company",
+    "/api/1.0/users/me?includeFields=permission",
+    "/api/1.0/users/me",
+    "/api/v1/users/me",
+    "/api/v1/users/current",
+    "/api/1.0/account-users/me",
+  ];
+  for (let i = 0; i < paths.length; i += 1) {
+    const path = paths[i];
+    try {
+      const payload = await requestJson(ensureAbsoluteUrl(baseUrl, path), headers);
+      const viewer = extractViewerCandidate(payload);
+      if (viewer) {
+        return viewer;
+      }
+    } catch (_error) {
+      // Ignore and continue with next endpoint candidate.
+    }
+  }
+  return null;
+}
+
 function normalizeProject(record) {
   if (!record || typeof record !== "object") {
     return null;
@@ -1413,6 +1473,7 @@ module.exports = {
       searchQuery: normalizedSearchQuery,
     };
     const viewer = deriveViewerAccess(request, context);
+    let resolvedViewer = viewer;
 
     if (request.previewInvoiceId || request.previewInvoiceNumber) {
       for (let i = 0; i < apiBaseCandidates.length; i += 1) {
@@ -1550,6 +1611,16 @@ module.exports = {
       );
       diagnostics.memberErrors.push(...membersResult.errors);
       const normalizedMembers = membersResult.rows.map(normalizeMember).filter(Boolean);
+      const viewerFromApi = await requestCurrentViewer(baseUrl, headers);
+      const membersWithViewer = viewerFromApi
+        ? [viewerFromApi].concat(normalizedMembers)
+        : normalizedMembers;
+      const viewerSeed = mergeObjects(viewer, viewerFromApi || {});
+      const resolvedLoopViewer = resolveViewerFromMembers(
+        viewerSeed,
+        membersWithViewer,
+        request
+      );
 
       if (allProjects.length || globalInvoices.length || normalizedMembers.length) {
         diagnostics.workspaceUsed = workspaceCandidates[0] || "";
@@ -1559,6 +1630,7 @@ module.exports = {
         );
         invoices = collectedInvoices;
         members = normalizedMembers;
+        resolvedViewer = resolvedLoopViewer;
         break;
       }
     }
@@ -1578,7 +1650,7 @@ module.exports = {
       ? dedupedInvoices.filter((invoice) => invoiceMatchesQuery(invoice, normalizedSearchQuery))
       : dedupedInvoices;
 
-    const resolvedViewer = resolveViewerFromMembers(viewer, members, request);
+    resolvedViewer = resolveViewerFromMembers(resolvedViewer, members, request);
 
     return {
       ok: true,

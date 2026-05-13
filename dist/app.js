@@ -1183,8 +1183,14 @@
             state.syncDiagnostics.usedDirectApiFallback = true;
             invoices = directApiInvoices;
           } else {
-            state.syncDiagnostics.usedSdkFallback = true;
-            invoices = await fetchInvoicesFromSourceProjects();
+            const sdkIdentifierInvoices = await fetchInvoicesFromSdkDataIdentifiers();
+            if (sdkIdentifierInvoices && sdkIdentifierInvoices.length) {
+              state.syncDiagnostics.usedSdkIdentifierFallback = true;
+              invoices = sdkIdentifierInvoices;
+            } else {
+              state.syncDiagnostics.usedSdkFallback = true;
+              invoices = await fetchInvoicesFromSourceProjects();
+            }
           }
         }
       }
@@ -1452,6 +1458,78 @@
       state.sourceProjects = dedupeStrings(
         invoices.map((invoice) => String(invoice.sourceProjectName || "").trim()).filter(Boolean)
       );
+    }
+    return dedupeInvoices(invoices);
+  }
+
+  async function fetchInvoicesFromSdkDataIdentifiers() {
+    if (!state.client || !state.client.data) {
+      return [];
+    }
+    const identifiers = (state.client.data && state.client.data.dataIdentifiers) || {};
+    const keys = Object.keys(identifiers).filter((key) => {
+      const upper = String(key || "").toUpperCase();
+      return (
+        upper.includes("INVOICE") ||
+        upper.includes("INVOICES") ||
+        upper.includes("BILL")
+      );
+    });
+    if (!keys.length) {
+      return [];
+    }
+
+    const records = [];
+    const seenRows = new Set();
+    for (let i = 0; i < keys.length; i += 1) {
+      const identifier = identifiers[keys[i]];
+      const payload = await invokeSdkDataGet(state.client, identifier);
+      if (!payload) {
+        continue;
+      }
+      const rows = extractCollection(payload, [
+        "invoices",
+        "invoiceList",
+        "documents",
+        "files",
+        "data",
+        "content",
+        "results",
+        "items",
+      ]);
+      const sourceRows = rows.length ? rows : [payload];
+      sourceRows.forEach((row) => {
+        if (!row || typeof row !== "object") {
+          return;
+        }
+        const rowKey = buildRowKey(row);
+        if (seenRows.has(rowKey)) {
+          return;
+        }
+        seenRows.add(rowKey);
+        records.push(row);
+      });
+    }
+
+    if (!records.length) {
+      return [];
+    }
+
+    const invoices = [];
+    for (let i = 0; i < records.length; i += 1) {
+      const row = records[i];
+      const project = resolveProjectFromArtifact(row) || {
+        id: "",
+        name: pickFirst(row.projectName || row.engagementName || ""),
+        accountName: state.context.accountName || "Rocketlane Account",
+        ownerName: "Unassigned",
+        ownerEmails: [],
+        raw: row,
+      };
+      const invoice = await buildInvoiceFromCandidate(row, project, { skipPdfScrub: true });
+      if (invoice) {
+        invoices.push(invoice);
+      }
     }
     return dedupeInvoices(invoices);
   }

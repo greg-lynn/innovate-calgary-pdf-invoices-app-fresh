@@ -1069,33 +1069,76 @@ function normalizeMember(record) {
   if (!record || typeof record !== "object") {
     return null;
   }
+  const nestedUser = record.user && typeof record.user === "object" ? record.user : null;
+  const nestedProfile =
+    record.profile && typeof record.profile === "object" ? record.profile : null;
+  const nestedPermission =
+    record.permission && typeof record.permission === "object" ? record.permission : null;
   const email = normalizeEmail(
     pickFirst(
       record.email ||
         record.userEmail ||
         record.workEmail ||
-        (record.user && record.user.email) ||
-        (record.profile && record.profile.email)
+        (nestedUser && (nestedUser.email || nestedUser.userEmail || nestedUser.workEmail)) ||
+        (nestedProfile && (nestedProfile.email || nestedProfile.workEmail))
     )
   );
-  const id = pickFirst(record.id || record.userId || record._id);
+  const id = pickFirst(
+    record.id ||
+      record.userId ||
+      record._id ||
+      (nestedUser && (nestedUser.id || nestedUser.userId || nestedUser._id))
+  );
   if (!email && !id) {
     return null;
   }
+  const permissionList = Array.isArray(record.permissions)
+    ? record.permissions
+        .map((entry) =>
+          pickFirst(
+            entry &&
+              (entry.permissionName ||
+                entry.name ||
+                entry.permission ||
+                entry.label)
+          )
+        )
+        .filter(Boolean)
+        .join(", ")
+    : "";
   return {
     id,
     email,
+    name: pickFirst(
+      record.name ||
+        record.displayName ||
+        record.fullName ||
+        record.userName ||
+        (nestedUser &&
+          (nestedUser.name ||
+            nestedUser.displayName ||
+            nestedUser.fullName ||
+            nestedUser.userName)) ||
+        [pickFirst(record.firstName), pickFirst(record.lastName)].filter(Boolean).join(" ")
+    ),
     permission: pickFirst(
-      (record.permission && record.permission.permissionName) ||
-        (record.permission && record.permission.name) ||
+      (nestedPermission &&
+        (nestedPermission.permissionName || nestedPermission.name)) ||
+        (nestedUser &&
+          nestedUser.permission &&
+          (nestedUser.permission.permissionName || nestedUser.permission.name)) ||
         record.permission ||
         record.permissionSet ||
         (record.permissionSet && record.permissionSet.name) ||
         record.accountPermission ||
-        (record.permissionSetObj && record.permissionSetObj.name)
+        (record.permissionSetObj && record.permissionSetObj.name) ||
+        permissionList
     ),
     roleLabel: pickFirst(
       (record.role && (record.role.roleName || record.role.name)) ||
+        (nestedUser &&
+          nestedUser.role &&
+          (nestedUser.role.roleName || nestedUser.role.name)) ||
         record.role ||
         record.userRole ||
         record.designation ||
@@ -1227,6 +1270,72 @@ function deriveViewerAccess(request, context) {
     id,
     email,
     displayName,
+    permission,
+    roleLabel,
+    isAdmin,
+  };
+}
+
+function canonicalIdentityName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function extractEmailLocalPart(email) {
+  const text = normalizeEmail(email);
+  const index = text.indexOf("@");
+  return index > 0 ? text.slice(0, index) : "";
+}
+
+function resolveViewerFromMembers(baseViewer, members, request) {
+  const viewer = baseViewer && typeof baseViewer === "object" ? baseViewer : {};
+  const list = Array.isArray(members) ? members : [];
+  if (!list.length) {
+    return viewer;
+  }
+  const viewerContext = (request && request.viewerContext) || {};
+  const targetId = pickFirst(viewer.id || viewerContext.userId);
+  const targetEmail = normalizeEmail(pickFirst(viewer.email || viewerContext.userEmail));
+  const targetName = canonicalIdentityName(
+    pickFirst(viewer.displayName || viewerContext.userName)
+  );
+  const targetEmailLocalPart = extractEmailLocalPart(targetEmail);
+
+  const matched = list.find((member) => {
+    if (!member || typeof member !== "object") {
+      return false;
+    }
+    const memberId = pickFirst(member.id);
+    const memberEmail = normalizeEmail(pickFirst(member.email));
+    const memberName = canonicalIdentityName(pickFirst(member.name));
+    if (targetId && memberId && targetId === memberId) {
+      return true;
+    }
+    if (targetEmail && memberEmail && targetEmail === memberEmail) {
+      return true;
+    }
+    if (targetName && memberName && (targetName === memberName || targetName.includes(memberName) || memberName.includes(targetName))) {
+      return true;
+    }
+    const memberEmailLocalPart = extractEmailLocalPart(memberEmail);
+    if (targetEmailLocalPart && memberEmailLocalPart && targetEmailLocalPart === memberEmailLocalPart) {
+      return true;
+    }
+    return false;
+  });
+
+  if (!matched) {
+    return viewer;
+  }
+  const permission = pickFirst(matched.permission || viewer.permission);
+  const roleLabel = pickFirst(matched.roleLabel || viewer.roleLabel);
+  const isAdmin = isAdminToken(permission) || viewer.isAdmin === true;
+  return {
+    id: pickFirst(matched.id || viewer.id),
+    email: normalizeEmail(pickFirst(matched.email || viewer.email)),
+    displayName: pickFirst(matched.name || viewer.displayName),
     permission,
     roleLabel,
     isAdmin,
@@ -1469,6 +1578,8 @@ module.exports = {
       ? dedupedInvoices.filter((invoice) => invoiceMatchesQuery(invoice, normalizedSearchQuery))
       : dedupedInvoices;
 
+    const resolvedViewer = resolveViewerFromMembers(viewer, members, request);
+
     return {
       ok: true,
       sourceProjects,
@@ -1481,7 +1592,7 @@ module.exports = {
         totalInvoices: dedupedInvoices.length,
         matchedInvoices: searchMatches.length,
       },
-      viewer,
+      viewer: resolvedViewer,
       diagnostics,
     };
   },

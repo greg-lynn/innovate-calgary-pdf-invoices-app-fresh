@@ -10,6 +10,8 @@ const FIELD_ALIAS_GROUPS = {
   contractName: ["contract name", "contract", "contractname"],
   hub: ["hub"],
   program: ["program"],
+  accountName: ["account", "client", "customer", "company"],
+  createdBy: ["created by", "createdby", "creator"],
   quantityHours: ["quantity", "qty", "hour", "hours"],
 };
 
@@ -156,6 +158,8 @@ function extractNamedCustomFieldValues(fields) {
     contractName: [],
     hub: [],
     program: [],
+    accountName: [],
+    createdBy: [],
     quantityHours: [],
   };
   const entries = extractFieldDisplayEntries(fields);
@@ -188,6 +192,8 @@ function extractNamedCustomFieldValues(fields) {
   output.contractName = dedupeStrings(output.contractName);
   output.hub = dedupeStrings(output.hub);
   output.program = dedupeStrings(output.program);
+  output.accountName = dedupeStrings(output.accountName);
+  output.createdBy = dedupeStrings(output.createdBy);
   output.quantityHours = dedupeStrings(output.quantityHours);
   return output;
 }
@@ -325,6 +331,8 @@ function extractCustomFieldAliases(record) {
     contractName: [],
     hub: [],
     program: [],
+    accountName: [],
+    createdBy: [],
     quantityHours: [],
   };
   collectCustomFieldSources(record).forEach((source) => {
@@ -332,11 +340,15 @@ function extractCustomFieldAliases(record) {
     merged.contractName.push(...(extracted.contractName || []));
     merged.hub.push(...(extracted.hub || []));
     merged.program.push(...(extracted.program || []));
+    merged.accountName.push(...(extracted.accountName || []));
+    merged.createdBy.push(...(extracted.createdBy || []));
     merged.quantityHours.push(...(extracted.quantityHours || []));
   });
   merged.contractName = dedupeStrings(merged.contractName);
   merged.hub = dedupeStrings(merged.hub);
   merged.program = dedupeStrings(merged.program);
+  merged.accountName = dedupeStrings(merged.accountName);
+  merged.createdBy = dedupeStrings(merged.createdBy);
   merged.quantityHours = dedupeStrings(merged.quantityHours);
   return merged;
 }
@@ -1094,7 +1106,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     (sum, value) => sum + normalizeAmount(value),
     0
   );
-  const quantityHours = lineItemQuantity || quantityHoursFromFields;
+  const quantityHours = quantityHoursFromFields || lineItemQuantity;
   const contractName = compactJoined(
     customFieldValues.contractName.concat([projectInfo.contractName])
   );
@@ -1109,7 +1121,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
       (record.submittedBy && record.submittedBy.name) ||
       (record.submittedByUser && record.submittedByUser.name)
   );
-  const createdByName = fullName(record.createdBy) || pickFirst(record.createdByName);
+  const createdByFieldName = pickFirst(customFieldValues.createdBy[0]);
+  const createdByName =
+    createdByFieldName || fullName(record.createdBy) || pickFirst(record.createdByName);
 
   if (!invoiceNumber && !invoiceName) {
     return null;
@@ -1129,7 +1143,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     invoiceId: pickFirst(record.invoiceId || record.id || record._id),
     invoiceName,
     ownerName: pickFirst(
-      submittedByName ||
+      createdByFieldName ||
+        createdByName ||
+        submittedByName ||
         record.projectManagerName ||
         record.expertAdvisorName ||
         record.pmName ||
@@ -1141,7 +1157,8 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ) || projectInfo.ownerName || "Unassigned",
     accountName:
       pickFirst(
-        record.accountName ||
+        customFieldValues.accountName[0] ||
+          record.accountName ||
           record.companyName ||
           (record.company && (record.company.companyName || record.company.name)) ||
           (record.account && record.account.name) ||

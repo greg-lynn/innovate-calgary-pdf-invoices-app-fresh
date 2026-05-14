@@ -13,6 +13,14 @@
     "expert advisor program invoices",
     "expert advisors program invoices",
   ];
+  const FIELD_ALIAS_GROUPS = {
+    accountName: ["account", "client", "customer", "company"],
+    createdBy: ["created by", "createdby", "creator"],
+    quantityHours: ["qty", "quantity", "hours", "hour"],
+    contractName: ["contract name", "contract"],
+    hub: ["hub"],
+    program: ["program"],
+  };
 
   const SAMPLE_PDF_DATA_URL =
     "data:application/pdf;base64,JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAxMzYgPj4Kc3RyZWFtCkJUCi9GMSAxOCBUZgo3MiA3MzAgVGQKKFNhbXBsZSBJbnZvaWNlIElOVi0wMDAxKSBUagowIC0yOCBUZAooUHJldmlldyBmcm9tIEludm9pY2UgQWNjZXNzIE1hbmFnZXIpIFRqCjAgLTIyIFRkCihEYXRlOiAyMDI2LTAzLTAzKSBUagpFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMTUgMDAwMDAgbiAKMDAwMDAwMDA2NCAwMDAwMCBuIAowMDAwMDAwMTIxIDAwMDAwIG4gCjAwMDAwMDAyNDcgMDAwMDAgbiAKMDAwMDAwMDQzMyAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjUwMwolJUVPRgo=";
@@ -2464,6 +2472,172 @@
     return false;
   }
 
+  function normalizeAliasLabel(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function humanizeFieldKey(value) {
+    return String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function fieldLabelMatchesAlias(label, aliases) {
+    const normalizedLabel = normalizeAliasLabel(label);
+    if (!normalizedLabel || !Array.isArray(aliases)) {
+      return false;
+    }
+    return aliases.some((alias) => {
+      const normalizedAlias = normalizeAliasLabel(alias);
+      return (
+        normalizedAlias &&
+        (normalizedLabel === normalizedAlias ||
+          normalizedLabel.includes(normalizedAlias) ||
+          normalizedAlias.includes(normalizedLabel))
+      );
+    });
+  }
+
+  function toFieldValueText(value) {
+    if (value == null) {
+      return "";
+    }
+    if (Array.isArray(value)) {
+      return dedupeStrings(value.map((entry) => toFieldValueText(entry))).join(", ");
+    }
+    if (typeof value === "object") {
+      return pickFirst(
+        value.fieldValueLabel ||
+          value.fieldValue ||
+          value.label ||
+          value.name ||
+          value.value ||
+          value.displayValue ||
+          readTextValue(value)
+      );
+    }
+    return String(value).trim();
+  }
+
+  function parseNumericValue(value) {
+    const numeric = Number(String(value == null ? "" : value).replace(/[^0-9.-]/g, ""));
+    return Number.isFinite(numeric) ? numeric : 0;
+  }
+
+  function extractInvoiceFieldAliasValues(node) {
+    const entries = [];
+    const seenEntries = new Set();
+    const pushEntry = (label, value) => {
+      const cleanLabel = pickFirst(label);
+      const cleanValue = toFieldValueText(value);
+      if (!cleanLabel || !cleanValue) {
+        return;
+      }
+      const key = `${normalizeAliasLabel(cleanLabel)}|${cleanValue}`;
+      if (seenEntries.has(key)) {
+        return;
+      }
+      seenEntries.add(key);
+      entries.push({ label: cleanLabel, value: cleanValue });
+    };
+    const walk = (value, depth, fallbackLabel) => {
+      if (depth > 5 || value == null) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach((entry) => walk(entry, depth + 1, fallbackLabel));
+        return;
+      }
+      if (typeof value !== "object") {
+        if (fallbackLabel) {
+          pushEntry(fallbackLabel, value);
+        }
+        return;
+      }
+      const label = pickFirst(
+        value.fieldLabel ||
+          value.fieldName ||
+          value.label ||
+          value.name ||
+          value.key ||
+          value.title ||
+          fallbackLabel
+      );
+      const directValue =
+        pickFirst(
+          value.fieldValueLabel ||
+            value.fieldValue ||
+            value.displayValue ||
+            value.value ||
+            (value.metaFieldValue &&
+              (value.metaFieldValue.label || value.metaFieldValue.value)) ||
+            (value.option && (value.option.label || value.option.value))
+        ) || value.values;
+      if (label && directValue !== undefined) {
+        pushEntry(label, directValue);
+      }
+      Object.keys(value).forEach((key) => {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) {
+          return;
+        }
+        const nested = value[key];
+        if (nested == null) {
+          return;
+        }
+        if (typeof nested !== "object") {
+          if (
+            key !== "id" &&
+            key !== "_id" &&
+            key !== "createdAt" &&
+            key !== "updatedAt" &&
+            key !== "deletedAt"
+          ) {
+            pushEntry(humanizeFieldKey(key), nested);
+          }
+          return;
+        }
+        walk(nested, depth + 1, humanizeFieldKey(key));
+      });
+    };
+    [
+      node && node.fields,
+      node && node.customFields,
+      node && node.customFieldValues,
+      node && node.fieldValues,
+      node && node.invoiceFields,
+      node && node.projectFields,
+      node,
+    ].forEach((source) => walk(source, 0, ""));
+    const aliases = {};
+    Object.keys(FIELD_ALIAS_GROUPS).forEach((key) => {
+      aliases[key] = [];
+    });
+    entries.forEach((entry) => {
+      Object.keys(FIELD_ALIAS_GROUPS).forEach((targetKey) => {
+        if (!fieldLabelMatchesAlias(entry.label, FIELD_ALIAS_GROUPS[targetKey])) {
+          return;
+        }
+        entry.value
+          .split(",")
+          .map((part) => pickFirst(part))
+          .filter(Boolean)
+          .forEach((part) => aliases[targetKey].push(part));
+      });
+    });
+    Object.keys(aliases).forEach((key) => {
+      aliases[key] = dedupeStrings(aliases[key]);
+    });
+    return aliases;
+  }
+
   async function buildInvoiceFromCandidate(node, project, options = {}) {
     const pdfUrlRaw = String(
       node.signedUrl ||
@@ -2522,6 +2696,12 @@
       node.currencySymbol || (node.currency && node.currency.currencySymbol)
     );
 
+    const fieldAliasValues = extractInvoiceFieldAliasValues(node);
+    const accountFieldValue = pickFirst(fieldAliasValues.accountName && fieldAliasValues.accountName[0]);
+    const createdByFieldName = pickFirst(fieldAliasValues.createdBy && fieldAliasValues.createdBy[0]);
+    const quantityFromFields = Array.isArray(fieldAliasValues.quantityHours)
+      ? fieldAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
+      : 0;
     const nodeContacts = extractContacts(node);
     const submittedByName = pickFirst(
       node.submittedByName ||
@@ -2539,7 +2719,9 @@
     );
     const ownerName =
       pickFirst(
-        submittedByName ||
+        createdByFieldName ||
+          pickFirst(node.createdByName) ||
+          submittedByName ||
           node.projectManagerName ||
           node.expertAdvisorName ||
           node.pmName ||
@@ -2584,17 +2766,38 @@
       ownerName,
       accountName:
         pickFirst(
-          node.accountName ||
+          accountFieldValue ||
+            node.accountName ||
             node.companyName ||
             (node.company && (node.company.companyName || node.company.name)) ||
             (node.account && node.account.name) ||
             (node.customer && node.customer.name)
         ) || project.accountName || state.context.accountName || "Rocketlane Account",
-      contractName: pickFirst(node.contractName || project.contractName || ""),
-      hub: pickFirst(node.hub || project.hub || ""),
-      program: pickFirst(node.program || project.program || ""),
+      contractName: pickFirst(
+        (fieldAliasValues.contractName && fieldAliasValues.contractName[0]) ||
+          node.contractName ||
+          project.contractName ||
+          ""
+      ),
+      hub: pickFirst(
+        (fieldAliasValues.hub && fieldAliasValues.hub[0]) || node.hub || project.hub || ""
+      ),
+      program: pickFirst(
+        (fieldAliasValues.program && fieldAliasValues.program[0]) ||
+          node.program ||
+          project.program ||
+          ""
+      ),
       quantityHours: Number(
-        pickFirst(node.quantityHours || node.quantity || node.qty || node.qtyHours || node.hours || 0)
+        pickFirst(
+          (quantityFromFields > 0 && quantityFromFields) ||
+            node.qty ||
+            node.quantity ||
+            node.quantityHours ||
+            node.qtyHours ||
+            node.hours ||
+            0
+        )
       ),
       invoiceDate,
       issueDate: invoiceDate,

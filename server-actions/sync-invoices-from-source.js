@@ -1646,6 +1646,124 @@ function enrichInvoiceDisplayData(invoice, memberLookups, projectLookup) {
   return next;
 }
 
+function extractUserIdValue(value) {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    return /^\d+$/.test(value.trim()) ? value.trim() : "";
+  }
+  if (typeof value === "object") {
+    return pickFirst(value.userId || value.id || value._id);
+  }
+  return "";
+}
+
+function extractUserEmailValue(value) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  return normalizeEmail(pickFirst(value.email || value.emailId || value.userEmail || value.workEmail));
+}
+
+function extractUserDisplayName(value) {
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  const direct = fullName(value) || pickFirst(value.userName || value.displayName || value.name);
+  return isLikelyDisplayName(direct) ? direct : "";
+}
+
+function enrichInvoiceFromDetailPayload(invoice, detailRecord, projectLookup) {
+  if (!invoice || typeof invoice !== "object") {
+    return invoice;
+  }
+  const next = Object.assign({}, invoice);
+  const detail = detailRecord && typeof detailRecord === "object" ? detailRecord : {};
+  const creator = detail.createdBy;
+  const submitter = detail.submittedBy || detail.submittedByUser;
+
+  const creatorUserId = pickFirst(
+    extractUserIdValue(creator) ||
+      extractUserIdValue(submitter) ||
+      detail.createdByUserId ||
+      detail.submittedByUserId
+  );
+  const creatorEmail = normalizeEmail(
+    pickFirst(
+      extractUserEmailValue(creator) ||
+        extractUserEmailValue(submitter) ||
+        detail.createdByEmail ||
+        detail.submittedByEmail
+    )
+  );
+  const creatorName = pickFirst(
+    extractUserDisplayName(creator) ||
+      extractUserDisplayName(submitter) ||
+      detail.createdByName ||
+      detail.submittedByName
+  );
+
+  if (creatorUserId) {
+    next.createdByUserId = creatorUserId;
+    next.associatedUserIds = dedupeStrings(
+      [creatorUserId].concat(Array.isArray(next.associatedUserIds) ? next.associatedUserIds : [])
+    );
+  }
+  if (creatorEmail) {
+    next.createdByEmail = creatorEmail;
+    next.associatedEmails = dedupeStrings(
+      [creatorEmail].concat(Array.isArray(next.associatedEmails) ? next.associatedEmails : [])
+    );
+  }
+  if (creatorName) {
+    next.createdByName = creatorName;
+    if (!isLikelyDisplayName(next.ownerName) || normalizeFieldLabel(next.ownerName) === "unassigned") {
+      next.ownerName = creatorName;
+    }
+  }
+
+  const detailAccountName = pickPreferredAccountName([
+    detail.accountName,
+    detail.company && (detail.company.companyName || detail.company.name),
+    detail.toCompany && (detail.toCompany.companyName || detail.toCompany.name),
+    detail.customer && (detail.customer.companyName || detail.customer.name),
+    detail.account && (detail.account.accountName || detail.account.companyName || detail.account.name),
+  ]);
+  if (detailAccountName && !isGenericAccountName(detailAccountName)) {
+    next.accountName = detailAccountName;
+  }
+
+  const detailProjects = Array.isArray(detail.projects) ? detail.projects : [];
+  if (detailProjects.length) {
+    const detailProject = detailProjects[0] || {};
+    const detailProjectId = pickFirst(
+      detailProject.projectId || detailProject.id || detailProject._id || detailProject.projectID
+    );
+    const detailProjectName = pickFirst(
+      detailProject.projectName || detailProject.name || detailProject.projectTitle
+    );
+    if (detailProjectId) {
+      next.sourceProjectId = detailProjectId;
+    }
+    if (detailProjectName) {
+      next.sourceProjectName = detailProjectName;
+    }
+  }
+
+  if (isGenericAccountName(next.accountName)) {
+    const projectAccount = resolveProjectAccountForInvoice(next, projectLookup);
+    if (projectAccount) {
+      next.accountName = projectAccount;
+    }
+  }
+
+  return next;
+}
+
 function collectRoleTokens(value, target, depth) {
   if (depth > 6 || value == null) {
     return;
@@ -2113,16 +2231,52 @@ module.exports = {
       for (let idx = 0; idx < globalInvoices.length; idx += 1) {
         const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
-        const normalized = normalizeInvoiceRecord(
+        let normalized = normalizeInvoiceRecord(
           row,
           project,
           request.accountName || iParams.accountName || ""
         );
         if (normalized) {
+          const invoiceId = encodeURIComponent(
+            pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
+          );
+          const needsDetailEnrichment =
+            !isLikelyDisplayName(normalized.ownerName) ||
+            isGenericAccountName(normalized.accountName) ||
+            !pickFirst(normalized.createdByUserId);
+          if (invoiceId && needsDetailEnrichment) {
+            try {
+              let detailPayload = null;
+              try {
+                detailPayload = await requestJson(
+                  ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${invoiceId}`),
+                  headers
+                );
+              } catch (_detailError) {
+                detailPayload = await requestJson(
+                  ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${invoiceId}`),
+                  headers
+                );
+              }
+              const detailRecord = extractRecordObject(detailPayload || {}, [
+                "invoice",
+                "data",
+                "result",
+                "payload",
+                "response",
+              ]) || {};
+              normalized = enrichInvoiceFromDetailPayload(
+                normalized,
+                detailRecord,
+                projectLookup
+              );
+            } catch (detailError) {
+              diagnostics.invoiceErrors.push(
+                String(detailError && detailError.message ? detailError.message : detailError)
+              );
+            }
+          }
           if (Number(normalized.quantityHours || 0) <= 0) {
-            const invoiceId = encodeURIComponent(
-              pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
-            );
             if (invoiceId) {
               const lineFetch = await requestCollection(
                 baseUrl,

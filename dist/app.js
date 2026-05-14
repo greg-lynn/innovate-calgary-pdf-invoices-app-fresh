@@ -3341,17 +3341,17 @@
       quantityCell.textContent = formatHours(invoice.quantityHours);
 
       row.appendChild(selectCell);
-      row.appendChild(statusCell);
+      row.appendChild(issueDateCell);
       row.appendChild(numberCell);
-      row.appendChild(ownerCell);
-      row.appendChild(amountCell);
-      row.appendChild(accountCell);
+      row.appendChild(statusCell);
       row.appendChild(contractCell);
+      row.appendChild(ownerCell);
+      row.appendChild(accountCell);
       row.appendChild(hubCell);
       row.appendChild(programCell);
-      row.appendChild(issueDateCell);
-      row.appendChild(dueDateCell);
       row.appendChild(quantityCell);
+      row.appendChild(amountCell);
+      row.appendChild(dueDateCell);
       refs.invoiceTableBody.appendChild(row);
     });
     renderSelectAllState();

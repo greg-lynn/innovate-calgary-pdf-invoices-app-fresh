@@ -82,6 +82,18 @@ input {
   gap: 1rem;
 }
 
+.title-block {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.app-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+}
+
 .eyebrow {
   font-size: 0.76rem;
   letter-spacing: 0.08em;
@@ -245,6 +257,24 @@ input[type="search"] {
   background: #fff;
 }
 
+.toolbar-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border: 1px solid #dde6fb;
+  border-radius: 12px;
+  background: #fbfdff;
+  padding: 0.6rem;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
 .filter-bar {
   display: grid;
   grid-template-columns: repeat(4, minmax(120px, 1fr));
@@ -259,7 +289,7 @@ input[type="search"] {
 .filter-toggle-row {
   display: flex;
   justify-content: flex-start;
-  margin-top: -0.15rem;
+  margin-top: 0;
 }
 
 .filter-control {
@@ -288,6 +318,7 @@ input[type="search"] {
   grid-template-columns: minmax(190px, 260px) auto 1fr;
   gap: 0.55rem;
   align-items: end;
+  flex: 1;
 }
 
 .export-control {
@@ -349,6 +380,10 @@ input:focus {
   color: #253259;
 }
 
+.invoice-table tbody tr:nth-child(even):not(.selected) {
+  background: #fafcff;
+}
+
 .invoice-table td.select-cell,
 .invoice-table thead th:first-child {
   width: 112px;
@@ -386,6 +421,16 @@ input:focus {
 
 .invoice-row.selected {
   background: #edf3ff;
+}
+
+.invoice-table thead th:nth-child(5),
+.invoice-table tbody td:nth-child(5),
+.invoice-table thead th:nth-child(10),
+.invoice-table tbody td:nth-child(10),
+.invoice-table thead th:nth-child(12),
+.invoice-table tbody td:nth-child(12) {
+  border-left: 2px solid #e6ecfb;
+  padding-left: 0.82rem;
 }
 
 .invoice-link {
@@ -631,8 +676,22 @@ input:focus {
     flex-direction: column;
   }
 
+  .title-block {
+    align-items: flex-start;
+  }
+
+  .app-logo {
+    width: 40px;
+    height: 40px;
+  }
+
   .header-meta {
     justify-content: flex-start;
+  }
+
+  .toolbar-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .filter-bar {

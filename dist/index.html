@@ -15,10 +15,13 @@
         <span>Rocketlane Marketplace App</span>
       </div>
       <header class="app-header">
-        <div>
+        <div class="title-block">
+          <img src="./icon.svg" alt="Innovate Calgary logo" class="app-logo" />
+          <div>
           <p class="eyebrow">Invoice Governance</p>
           <h1>Invoice Access Manager</h1>
           <p id="scopeText" class="scope-text hidden">Loading workspace context...</p>
+          </div>
         </div>
         <div class="header-meta">
           <span id="connectionBadge" class="badge badge-muted">Initializing</span>
@@ -58,20 +61,38 @@
             </div>
             <p id="syncStatus" class="muted"></p>
 
-            <label class="control">
-              <span>Search</span>
-              <input
-                id="searchInput"
-                type="search"
-                placeholder="Search by status, invoice #, expert advisor, amount, client, contract name, hub, program, hours, or date..."
-              />
-            </label>
+            <section class="toolbar-shell">
+              <label class="control control-search">
+                <span>Search</span>
+                <input
+                  id="searchInput"
+                  type="search"
+                  placeholder="Search invoices..."
+                />
+              </label>
+              <div class="toolbar-actions">
+                <div class="filter-toggle-row">
+                  <button id="filterToggleButton" class="btn btn-subtle" type="button">Filter</button>
+                </div>
+                <section class="export-bar">
+                  <label class="filter-control export-control">
+                    <span>Download</span>
+                    <select id="exportModeSelect">
+                      <option value="selected">Selected invoices</option>
+                      <option value="all">All invoices</option>
+                      <option value="filtered">Filtered/search results</option>
+                    </select>
+                  </label>
+                  <button id="downloadZipButton" class="btn btn-subtle" type="button">
+                    Download ZIP
+                  </button>
+                  <p id="exportInsight" class="muted"></p>
+                </section>
+              </div>
+            </section>
             <p id="searchInsight" class="muted hidden">
               Search runs across invoices in source projects and updates as you type.
             </p>
-            <div class="filter-toggle-row">
-              <button id="filterToggleButton" class="btn btn-subtle" type="button">Filter</button>
-            </div>
             <section id="filterBar" class="filter-bar hidden">
               <label class="filter-control">
                 <span>Invoice status</span>
@@ -141,20 +162,6 @@
                 Clear filters
               </button>
             </section>
-            <section class="export-bar">
-              <label class="filter-control export-control">
-                <span>Download</span>
-                <select id="exportModeSelect">
-                  <option value="selected">Selected invoices</option>
-                  <option value="all">All invoices</option>
-                  <option value="filtered">Filtered/search results</option>
-                </select>
-              </label>
-              <button id="downloadZipButton" class="btn btn-subtle" type="button">
-                Download ZIP
-              </button>
-              <p id="exportInsight" class="muted"></p>
-            </section>
 
             <p id="visibilitySummary" class="visibility-summary hidden"></p>
 
@@ -168,17 +175,17 @@
                         <span>Select all</span>
                       </label>
                     </th>
-                    <th scope="col"><button class="sort-button" data-sort="invoiceStatus" type="button">Invoice status</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="issueDate" type="button">Issue Date</button></th>
                     <th scope="col"><button class="sort-button" data-sort="invoiceNumber" type="button">Invoice Number</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="ownerName" type="button">Expert Advisor</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="amount" type="button">Amount</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="accountName" type="button">Client</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="invoiceStatus" type="button">Invoice status</button></th>
                     <th scope="col"><button class="sort-button" data-sort="contractName" type="button">Contract Name</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="ownerName" type="button">Expert Advisor</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="accountName" type="button">Client</button></th>
                     <th scope="col"><button class="sort-button" data-sort="hub" type="button">Hub</button></th>
                     <th scope="col"><button class="sort-button" data-sort="program" type="button">Program</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="issueDate" type="button">Issue Date</button></th>
-                    <th scope="col"><button class="sort-button" data-sort="dueDate" type="button">Due Date</button></th>
                     <th scope="col"><button class="sort-button" data-sort="quantityHours" type="button">Hours</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="amount" type="button">Amount</button></th>
+                    <th scope="col"><button class="sort-button" data-sort="dueDate" type="button">Due Date</button></th>
                   </tr>
                 </thead>
                 <tbody id="invoiceTableBody"></tbody>

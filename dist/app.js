@@ -2532,6 +2532,45 @@
     return Number.isFinite(numeric) ? numeric : 0;
   }
 
+  function isLikelyIdentifierValue(value) {
+    const text = pickFirst(value);
+    if (!text) {
+      return false;
+    }
+    if (/^\d+$/.test(text)) {
+      return true;
+    }
+    if (/^[0-9a-f]{16,}$/i.test(text)) {
+      return true;
+    }
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) {
+      return true;
+    }
+    return false;
+  }
+
+  function isLikelyDisplayName(value) {
+    const text = pickFirst(value);
+    if (!text) {
+      return false;
+    }
+    if (isLikelyIdentifierValue(text)) {
+      return false;
+    }
+    return /[a-z]/i.test(text);
+  }
+
+  function pickPreferredAccountName(candidates) {
+    const values = (Array.isArray(candidates) ? candidates : []).map((value) => pickFirst(value));
+    const informative = values.find(
+      (value) => value && normalizeAliasLabel(value) !== "rocketlane account"
+    );
+    if (informative) {
+      return informative;
+    }
+    return values.find(Boolean) || "";
+  }
+
   function extractInvoiceFieldAliasValues(node) {
     const entries = [];
     const seenEntries = new Set();
@@ -2698,10 +2737,27 @@
 
     const fieldAliasValues = extractInvoiceFieldAliasValues(node);
     const accountFieldValue = pickFirst(fieldAliasValues.accountName && fieldAliasValues.accountName[0]);
-    const createdByFieldName = pickFirst(fieldAliasValues.createdBy && fieldAliasValues.createdBy[0]);
+    const createdByFieldName = isLikelyDisplayName(
+      fieldAliasValues.createdBy && fieldAliasValues.createdBy[0]
+    )
+      ? pickFirst(fieldAliasValues.createdBy && fieldAliasValues.createdBy[0])
+      : "";
     const quantityFromFields = Array.isArray(fieldAliasValues.quantityHours)
       ? fieldAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
       : 0;
+    const createdByRecordName = pickFirst(
+      node.createdByName ||
+        (node.createdBy &&
+          (node.createdBy.name ||
+            [pickFirst(node.createdBy.firstName), pickFirst(node.createdBy.lastName)]
+              .filter(Boolean)
+              .join(" "))) ||
+        (node.createdByUser &&
+          (node.createdByUser.name ||
+            [pickFirst(node.createdByUser.firstName), pickFirst(node.createdByUser.lastName)]
+              .filter(Boolean)
+              .join(" ")))
+    );
     const nodeContacts = extractContacts(node);
     const submittedByName = pickFirst(
       node.submittedByName ||
@@ -2719,8 +2775,8 @@
     );
     const ownerName =
       pickFirst(
-        createdByFieldName ||
-          pickFirst(node.createdByName) ||
+        createdByRecordName ||
+          createdByFieldName ||
           submittedByName ||
           node.projectManagerName ||
           node.expertAdvisorName ||
@@ -2765,14 +2821,17 @@
       invoiceName,
       ownerName,
       accountName:
-        pickFirst(
-          accountFieldValue ||
-            node.accountName ||
-            node.companyName ||
-            (node.company && (node.company.companyName || node.company.name)) ||
-            (node.account && node.account.name) ||
-            (node.customer && node.customer.name)
-        ) || project.accountName || state.context.accountName || "Rocketlane Account",
+        pickPreferredAccountName([
+          node.accountName,
+          node.account && (node.account.accountName || node.account.name || node.account.companyName),
+          node.customer && (node.customer.accountName || node.customer.companyName || node.customer.name),
+          node.company && (node.company.companyName || node.company.name),
+          node.companyName,
+          accountFieldValue,
+          project.accountName,
+          state.context.accountName,
+          "Rocketlane Account",
+        ]) || "Rocketlane Account",
       contractName: pickFirst(
         (fieldAliasValues.contractName && fieldAliasValues.contractName[0]) ||
           node.contractName ||

@@ -102,6 +102,45 @@ function normalizeAmount(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function isLikelyIdentifierValue(value) {
+  const text = pickFirst(value);
+  if (!text) {
+    return false;
+  }
+  if (/^\d+$/.test(text)) {
+    return true;
+  }
+  if (/^[0-9a-f]{16,}$/i.test(text)) {
+    return true;
+  }
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function isLikelyDisplayName(value) {
+  const text = pickFirst(value);
+  if (!text) {
+    return false;
+  }
+  if (isLikelyIdentifierValue(text)) {
+    return false;
+  }
+  return /[a-z]/i.test(text);
+}
+
+function pickPreferredAccountName(candidates) {
+  const values = (Array.isArray(candidates) ? candidates : []).map((value) => pickFirst(value));
+  const informative = values.find(
+    (value) => value && normalizeFieldLabel(value) !== "rocketlane account"
+  );
+  if (informative) {
+    return informative;
+  }
+  return values.find(Boolean) || "";
+}
+
 function normalizeFieldLabel(value) {
   return String(value || "")
     .toLowerCase()
@@ -1121,9 +1160,19 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
       (record.submittedBy && record.submittedBy.name) ||
       (record.submittedByUser && record.submittedByUser.name)
   );
-  const createdByFieldName = pickFirst(customFieldValues.createdBy[0]);
+  const createdByFieldName = isLikelyDisplayName(customFieldValues.createdBy[0])
+    ? pickFirst(customFieldValues.createdBy[0])
+    : "";
   const createdByName =
-    createdByFieldName || fullName(record.createdBy) || pickFirst(record.createdByName);
+    pickFirst(
+      fullName(record.createdBy) ||
+        pickFirst(record.createdByName) ||
+        (record.createdByUser &&
+          (record.createdByUser.name ||
+            [pickFirst(record.createdByUser.firstName), pickFirst(record.createdByUser.lastName)]
+              .filter(Boolean)
+              .join(" ")))
+    ) || createdByFieldName;
 
   if (!invoiceNumber && !invoiceName) {
     return null;
@@ -1143,8 +1192,8 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     invoiceId: pickFirst(record.invoiceId || record.id || record._id),
     invoiceName,
     ownerName: pickFirst(
-      createdByFieldName ||
-        createdByName ||
+      createdByName ||
+        createdByFieldName ||
         submittedByName ||
         record.projectManagerName ||
         record.expertAdvisorName ||
@@ -1156,17 +1205,17 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
         (record.owner && record.owner.name)
     ) || projectInfo.ownerName || "Unassigned",
     accountName:
-      pickFirst(
-        customFieldValues.accountName[0] ||
-          record.accountName ||
-          record.companyName ||
-          (record.company && (record.company.companyName || record.company.name)) ||
-          (record.account && record.account.name) ||
-          (record.customer && (record.customer.companyName || record.customer.name))
-      ) ||
-      projectInfo.accountName ||
-      fallbackAccountName ||
-      "Rocketlane Account",
+      pickPreferredAccountName([
+        record.accountName,
+        record.account && (record.account.accountName || record.account.name),
+        record.customer && (record.customer.accountName || record.customer.companyName || record.customer.name),
+        record.company && (record.company.companyName || record.company.name),
+        record.companyName,
+        customFieldValues.accountName[0],
+        projectInfo.accountName,
+        fallbackAccountName,
+        "Rocketlane Account",
+      ]) || "Rocketlane Account",
     invoiceDate,
     issueDate,
     dueDate,

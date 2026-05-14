@@ -2523,9 +2523,24 @@
     );
 
     const nodeContacts = extractContacts(node);
+    const submittedByName = pickFirst(
+      node.submittedByName ||
+        (node.submittedBy &&
+          (node.submittedBy.name ||
+            [pickFirst(node.submittedBy.firstName), pickFirst(node.submittedBy.lastName)]
+              .filter(Boolean)
+              .join(" "))) ||
+        (node.submittedByUser &&
+          (node.submittedByUser.name ||
+            [pickFirst(node.submittedByUser.firstName), pickFirst(node.submittedByUser.lastName)]
+              .filter(Boolean)
+              .join(" "))) ||
+        node.createdByName
+    );
     const ownerName =
       pickFirst(
-        node.projectManagerName ||
+        submittedByName ||
+          node.projectManagerName ||
           node.expertAdvisorName ||
           node.pmName ||
           node.expertAdvisor ||
@@ -2578,7 +2593,9 @@
       contractName: pickFirst(node.contractName || project.contractName || ""),
       hub: pickFirst(node.hub || project.hub || ""),
       program: pickFirst(node.program || project.program || ""),
-      quantityHours: Number(pickFirst(node.quantityHours || node.quantity || node.hours || 0)),
+      quantityHours: Number(
+        pickFirst(node.quantityHours || node.quantity || node.qty || node.qtyHours || node.hours || 0)
+      ),
       invoiceDate,
       issueDate: invoiceDate,
       dueDate,
@@ -3499,7 +3516,12 @@
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
+        if (cached.preview) {
+          refs.modalInvoicePreview.classList.remove("hidden");
+          renderInvoicePreviewContent(invoice, cached.preview, false, "");
+        } else {
+          refs.modalInvoicePreview.classList.add("hidden");
+        }
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
@@ -3516,21 +3538,24 @@
           };
         }
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
+        refs.modalInvoicePreview.classList.remove("hidden");
+        renderInvoicePreviewContent(invoice, preview, false, "");
         setModalPdfFrameSrc(generatedPdfDataUrl);
         return;
       }
       const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
       if (setModalPdfFrameFromBytes(nativePdfBytes)) {
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
+        refs.modalInvoicePreview.classList.remove("hidden");
+        renderInvoicePreviewContent(invoice, preview, false, "");
         return;
       }
       const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
       if (pdfDataUrl) {
         // Do not persist fallback PDFs in cache; allow future native preview retries.
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
+        refs.modalInvoicePreview.classList.remove("hidden");
+        renderInvoicePreviewContent(invoice, preview, false, "");
         setModalPdfFrameSrc(pdfDataUrl);
         return;
       }
@@ -3661,6 +3686,20 @@
     const previewData = preview || {};
     const lineItems = Array.isArray(previewData.lineItems) ? previewData.lineItems : [];
     const payments = Array.isArray(previewData.payments) ? previewData.payments : [];
+    const invoiceFields = (
+      Array.isArray(previewData.allFields) ? previewData.allFields : previewData.customFields
+    )
+      .filter(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          String(entry.label || "").trim() &&
+          String(entry.value || "").trim()
+      )
+      .map((entry) => ({
+        label: String(entry.label || "").trim(),
+        value: String(entry.value || "").trim(),
+      }));
     const currencyCode = String(
       previewData.currencyCode || invoice.currencyCode || "USD"
     ).toUpperCase();
@@ -3783,6 +3822,19 @@
       11,
       true
     );
+
+    let fieldY = 204;
+    if (invoiceFields.length) {
+      addText("INVOICE FIELDS", 60, fieldY, 10, true);
+      fieldY -= 18;
+      invoiceFields.slice(0, 8).forEach((entry) => {
+        const label = splitPdfLine(String(entry.label || ""), 28)[0];
+        const value = splitPdfLine(String(entry.value || ""), 40)[0];
+        addText(label, 60, fieldY, 9, true);
+        addText(value, 190, fieldY, 9, false);
+        fieldY -= 14;
+      });
+    }
 
     return buildPdfDataUrlFromCommands(commands);
   }
@@ -3942,6 +3994,20 @@
       ],
       ["Due date", formatDate(previewData.dueDate || invoice.dueDate)],
     ];
+    const invoiceFields = (
+      Array.isArray(previewData.allFields) ? previewData.allFields : previewData.customFields
+    )
+      .filter(
+        (entry) =>
+          entry &&
+          typeof entry === "object" &&
+          String(entry.label || "").trim() &&
+          String(entry.value || "").trim()
+      )
+      .map((entry) => ({
+        label: String(entry.label || "").trim(),
+        value: String(entry.value || "").trim(),
+      }));
     const lineItems = Array.isArray(previewData.lineItems) ? previewData.lineItems : [];
     const payments = Array.isArray(previewData.payments) ? previewData.payments : [];
     const lineRowsHtml = lineItems.length
@@ -3994,6 +4060,18 @@
           )
           .join("")
       : '<tr><td colspan="4">No payment records returned by API.</td></tr>';
+    const invoiceFieldRowsHtml = invoiceFields.length
+      ? invoiceFields
+          .map(
+            (entry) =>
+              "<tr><td>" +
+              escapeHtml(entry.label) +
+              "</td><td>" +
+              escapeHtml(entry.value) +
+              "</td></tr>"
+          )
+          .join("")
+      : '<tr><td colspan="2">No custom invoice fields returned by API.</td></tr>';
     refs.modalInvoicePreview.innerHTML =
       '<div class="modal-preview-summary">' +
       summaryRows
@@ -4014,6 +4092,10 @@
       '<h4 class="modal-preview-section-title">Payments</h4>' +
       '<table class="modal-preview-table"><thead><tr><th>Type</th><th>Date</th><th>Amount</th><th>Notes</th></tr></thead><tbody>' +
       paymentRowsHtml +
+      "</tbody></table>" +
+      '<h4 class="modal-preview-section-title">Invoice fields</h4>' +
+      '<table class="modal-preview-table"><thead><tr><th>Field</th><th>Value</th></tr></thead><tbody>' +
+      invoiceFieldRowsHtml +
       "</tbody></table>";
   }
 

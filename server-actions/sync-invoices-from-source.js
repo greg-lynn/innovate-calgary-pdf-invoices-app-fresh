@@ -6,6 +6,12 @@ const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 const EMBEDDED_ROCKETLANE_API_KEY = "rl-6657ce9e-ee84-465d-b4df-d97b1239a343";
 const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
+const FIELD_ALIAS_GROUPS = {
+  contractName: ["contract name", "contract", "contractname"],
+  hub: ["hub"],
+  program: ["program"],
+  quantityHours: ["quantity", "qty", "hour", "hours"],
+};
 
 function normalizeProjectName(value) {
   return String(value || "")
@@ -101,6 +107,30 @@ function normalizeFieldLabel(value) {
     .trim();
 }
 
+function humanizeFieldLabel(value) {
+  return String(value || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fieldLabelMatchesAlias(label, aliases) {
+  const normalizedLabel = normalizeFieldLabel(label);
+  if (!normalizedLabel || !Array.isArray(aliases)) {
+    return false;
+  }
+  return aliases.some((alias) => {
+    const normalizedAlias = normalizeFieldLabel(alias);
+    return (
+      normalizedAlias &&
+      (normalizedLabel === normalizedAlias ||
+        normalizedLabel.includes(normalizedAlias) ||
+        normalizedAlias.includes(normalizedLabel))
+    );
+  });
+}
+
 function toFieldText(value) {
   if (value == null) {
     return "";
@@ -126,50 +156,29 @@ function extractNamedCustomFieldValues(fields) {
     contractName: [],
     hub: [],
     program: [],
+    quantityHours: [],
   };
-  if (!Array.isArray(fields)) {
+  const entries = extractFieldDisplayEntries(fields);
+  if (!entries.length) {
     return output;
   }
-  fields.forEach((field) => {
-    if (!field || typeof field !== "object") {
+  entries.forEach((entry) => {
+    if (!entry || typeof entry !== "object") {
       return;
     }
-    const label = normalizeFieldLabel(
-      pickFirst(
-        field.fieldLabel || field.fieldName || field.label || field.name || field.key
-      )
-    );
+    const label = normalizeFieldLabel(entry.label);
     if (!label) {
       return;
     }
-    let targetKey = "";
-    if (label === "contract name" || label === "contractname" || label === "contract") {
-      targetKey = "contractName";
-    } else if (label === "hub") {
-      targetKey = "hub";
-    } else if (label === "program") {
-      targetKey = "program";
-    }
-    if (!targetKey) {
+    const value = toFieldText(entry.value);
+    if (!value) {
       return;
     }
-    const candidates = [
-      field.fieldValueLabel,
-      field.fieldValue,
-      field.displayValue,
-      field.value,
-      field.values,
-      field.metaFieldValue && field.metaFieldValue.label,
-      field.metaFieldValue && field.metaFieldValue.value,
-      field.option && field.option.label,
-      field.option && field.option.value,
-    ];
-    candidates.forEach((candidate) => {
-      const text = toFieldText(candidate);
-      if (!text) {
+    Object.keys(FIELD_ALIAS_GROUPS).forEach((targetKey) => {
+      if (!fieldLabelMatchesAlias(label, FIELD_ALIAS_GROUPS[targetKey])) {
         return;
       }
-      text
+      value
         .split(",")
         .map((part) => pickFirst(part))
         .filter(Boolean)
@@ -179,45 +188,85 @@ function extractNamedCustomFieldValues(fields) {
   output.contractName = dedupeStrings(output.contractName);
   output.hub = dedupeStrings(output.hub);
   output.program = dedupeStrings(output.program);
+  output.quantityHours = dedupeStrings(output.quantityHours);
   return output;
 }
 
 function extractFieldDisplayEntries(fields) {
-  if (!Array.isArray(fields)) {
-    return [];
-  }
   const entries = [];
   const seen = new Set();
-  fields.forEach((field) => {
-    if (!field || typeof field !== "object") {
+  const pushEntry = (label, value) => {
+    const cleanLabel = pickFirst(label);
+    const cleanValue = toFieldText(value);
+    if (!cleanLabel || !cleanValue) {
       return;
     }
-    const label = pickFirst(
-      field.fieldLabel || field.fieldName || field.label || field.name || field.key
-    );
-    if (!label) {
-      return;
-    }
-    const value = toFieldText(
-      pickFirst(
-        field.fieldValueLabel ||
-          field.fieldValue ||
-          field.displayValue ||
-          field.value ||
-          (field.metaFieldValue &&
-            (field.metaFieldValue.label || field.metaFieldValue.value))
-      ) || field.values
-    );
-    if (!value) {
-      return;
-    }
-    const dedupeKey = `${normalizeFieldLabel(label)}|${value}`;
+    const dedupeKey = `${normalizeFieldLabel(cleanLabel)}|${cleanValue}`;
     if (seen.has(dedupeKey)) {
       return;
     }
     seen.add(dedupeKey);
-    entries.push({ label, value });
-  });
+    entries.push({ label: cleanLabel, value: cleanValue });
+  };
+  const walk = (node, depth, fallbackLabel) => {
+    if (depth > 5 || node == null) {
+      return;
+    }
+    if (Array.isArray(node)) {
+      node.forEach((entry) => walk(entry, depth + 1, fallbackLabel));
+      return;
+    }
+    if (typeof node !== "object") {
+      if (fallbackLabel) {
+        pushEntry(fallbackLabel, node);
+      }
+      return;
+    }
+    const label = pickFirst(
+      node.fieldLabel ||
+        node.fieldName ||
+        node.label ||
+        node.name ||
+        node.key ||
+        node.title ||
+        fallbackLabel
+    );
+    const directValue =
+      pickFirst(
+        node.fieldValueLabel ||
+          node.fieldValue ||
+          node.displayValue ||
+          node.value ||
+          (node.metaFieldValue && (node.metaFieldValue.label || node.metaFieldValue.value)) ||
+          (node.option && (node.option.label || node.option.value))
+      ) || node.values;
+    if (label && directValue !== undefined) {
+      pushEntry(label, directValue);
+    }
+    Object.keys(node).forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+        return;
+      }
+      const value = node[key];
+      if (value == null) {
+        return;
+      }
+      if (typeof value !== "object") {
+        if (
+          key !== "id" &&
+          key !== "_id" &&
+          key !== "createdAt" &&
+          key !== "updatedAt" &&
+          key !== "deletedAt"
+        ) {
+          pushEntry(humanizeFieldLabel(key), value);
+        }
+        return;
+      }
+      walk(value, depth + 1, humanizeFieldLabel(key));
+    });
+  };
+  walk(fields, 0, "");
   return entries;
 }
 
@@ -256,6 +305,42 @@ function compactJoined(values) {
   );
 }
 
+function collectCustomFieldSources(record) {
+  if (!record || typeof record !== "object") {
+    return [];
+  }
+  return [
+    record.fields,
+    record.customFields,
+    record.customFieldValues,
+    record.fieldValues,
+    record.projectFields,
+    record.invoiceFields,
+    record.metadataFields,
+  ].filter((value) => value && (Array.isArray(value) || typeof value === "object"));
+}
+
+function extractCustomFieldAliases(record) {
+  const merged = {
+    contractName: [],
+    hub: [],
+    program: [],
+    quantityHours: [],
+  };
+  collectCustomFieldSources(record).forEach((source) => {
+    const extracted = extractNamedCustomFieldValues(source);
+    merged.contractName.push(...(extracted.contractName || []));
+    merged.hub.push(...(extracted.hub || []));
+    merged.program.push(...(extracted.program || []));
+    merged.quantityHours.push(...(extracted.quantityHours || []));
+  });
+  merged.contractName = dedupeStrings(merged.contractName);
+  merged.hub = dedupeStrings(merged.hub);
+  merged.program = dedupeStrings(merged.program);
+  merged.quantityHours = dedupeStrings(merged.quantityHours);
+  return merged;
+}
+
 function collectInvoiceLineItems(record) {
   const lineItems = [];
   const pushLines = (items) => {
@@ -279,8 +364,20 @@ function collectInvoiceLineItems(record) {
 
 function sumLineItemQuantity(lineItems) {
   return (Array.isArray(lineItems) ? lineItems : []).reduce((sum, line) => {
+    const lineFields = extractNamedCustomFieldValues(line && line.fields);
+    const fieldQuantity = normalizeAmount(
+      (lineFields.quantityHours && lineFields.quantityHours[0]) || ""
+    );
     const quantity = normalizeAmount(
-      line && (line.quantity || line.hours || line.billableHours || line.billableQuantity)
+      line &&
+        (line.quantity ||
+          line.qty ||
+          line.qtyHours ||
+          line.hours ||
+          line.billableHours ||
+          line.billableQuantity ||
+          line.quantityHours ||
+          fieldQuantity)
     );
     return sum + (Number.isFinite(quantity) ? quantity : 0);
   }, 0);
@@ -409,6 +506,42 @@ function extractCollection(payload, preferredKeys) {
   }
 
   return [];
+}
+
+function extractRecordObject(payload, preferredKeys) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return null;
+  }
+  const keys = Array.isArray(preferredKeys) ? preferredKeys : [];
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    const direct = payload[key];
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) {
+      return direct;
+    }
+    if (payload.data && payload.data[key] && typeof payload.data[key] === "object") {
+      return payload.data[key];
+    }
+    if (payload.response && payload.response[key] && typeof payload.response[key] === "object") {
+      return payload.response[key];
+    }
+    if (payload.result && payload.result[key] && typeof payload.result[key] === "object") {
+      return payload.result[key];
+    }
+  }
+  if (payload.data && typeof payload.data === "object" && !Array.isArray(payload.data)) {
+    return payload.data;
+  }
+  if (payload.response && typeof payload.response === "object" && !Array.isArray(payload.response)) {
+    return payload.response;
+  }
+  if (payload.result && typeof payload.result === "object" && !Array.isArray(payload.result)) {
+    return payload.result;
+  }
+  if (payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)) {
+    return payload.payload;
+  }
+  return payload;
 }
 
 async function requestJson(url, headers) {
@@ -786,7 +919,7 @@ function normalizeProject(record) {
   const memberUserIds = dedupeStrings(
     teamMembers.map((member) => pickFirst(member && (member.userId || member.id || member._id)))
   );
-  const customFieldValues = extractNamedCustomFieldValues(record.fields);
+  const customFieldValues = extractCustomFieldAliases(record);
   return {
     id,
     name,
@@ -938,6 +1071,10 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     record.createdByUserId,
     record.submittedByUserId,
     record.approvedByUserId,
+    record.submittedBy && record.submittedBy.id,
+    record.submittedBy && record.submittedBy.userId,
+    record.submittedByUser && record.submittedByUser.id,
+    record.submittedByUser && record.submittedByUser.userId,
     record.createdBy && record.createdBy.id,
     record.createdBy && record.createdBy.userId,
     record.user && record.user.id,
@@ -950,15 +1087,27 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   const projectEmails = dedupeStrings([
     normalizeEmail(projectInfo.ownerEmail),
   ].concat(projectInfo.memberEmails || []));
-  const customFieldValues = extractNamedCustomFieldValues(record.fields);
+  const customFieldValues = extractCustomFieldAliases(record);
   const lineItems = collectInvoiceLineItems(record);
-  const quantityHours = sumLineItemQuantity(lineItems);
+  const lineItemQuantity = sumLineItemQuantity(lineItems);
+  const quantityHoursFromFields = customFieldValues.quantityHours.reduce(
+    (sum, value) => sum + normalizeAmount(value),
+    0
+  );
+  const quantityHours = lineItemQuantity || quantityHoursFromFields;
   const contractName = compactJoined(
     customFieldValues.contractName.concat([projectInfo.contractName])
   );
   const hub = compactJoined(customFieldValues.hub.concat([projectInfo.hub]));
   const program = compactJoined(
     customFieldValues.program.concat([projectInfo.program])
+  );
+  const submittedByName = pickFirst(
+    record.submittedByName ||
+      fullName(record.submittedBy) ||
+      fullName(record.submittedByUser) ||
+      (record.submittedBy && record.submittedBy.name) ||
+      (record.submittedByUser && record.submittedByUser.name)
   );
   const createdByName = fullName(record.createdBy) || pickFirst(record.createdByName);
 
@@ -980,7 +1129,8 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     invoiceId: pickFirst(record.invoiceId || record.id || record._id),
     invoiceName,
     ownerName: pickFirst(
-      record.projectManagerName ||
+      submittedByName ||
+        record.projectManagerName ||
         record.expertAdvisorName ||
         record.pmName ||
         record.ownerName ||
@@ -1021,6 +1171,26 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
 }
 
 function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
+  const previewFieldSources = [
+    invoiceRecord && invoiceRecord.fields,
+    invoiceRecord && invoiceRecord.customFields,
+    invoiceRecord && invoiceRecord.customFieldValues,
+    invoiceRecord && invoiceRecord.fieldValues,
+    invoiceRecord && invoiceRecord.projectFields,
+    invoiceRecord && invoiceRecord.invoiceFields,
+  ];
+  const previewFields = mergeFieldDisplayEntries(
+    mergeFieldDisplayEntries(
+      previewFieldSources.reduce(
+        (acc, source) => mergeFieldDisplayEntries(acc, extractFieldDisplayEntries(source)),
+        []
+      ),
+      extractFieldDisplayEntries(
+        invoiceRecord && invoiceRecord.additionalFields ? invoiceRecord.additionalFields : []
+      )
+    ),
+    extractFieldDisplayEntries(invoiceRecord || {})
+  ).filter((entry) => pickFirst(entry && entry.value));
   const invoiceNumber = pickFirst(invoiceRecord && invoiceRecord.invoiceNumber);
   const projectName = pickFirst(
     invoiceRecord &&
@@ -1028,7 +1198,11 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
       invoiceRecord.projects[0] &&
       (invoiceRecord.projects[0].projectName || invoiceRecord.projects[0].name)
   );
-  const createdBy = invoiceRecord && invoiceRecord.createdBy ? invoiceRecord.createdBy : null;
+  const submitter =
+    (invoiceRecord && invoiceRecord.submittedBy) ||
+    (invoiceRecord && invoiceRecord.submittedByUser) ||
+    (invoiceRecord && invoiceRecord.createdBy) ||
+    null;
   return {
     invoiceId: pickFirst(invoiceRecord && (invoiceRecord.invoiceId || invoiceRecord.id || invoiceRecord._id)),
     invoiceNumber,
@@ -1059,16 +1233,19 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
           invoiceRecord.accountName ||
           (invoiceRecord.company && (invoiceRecord.company.workspaceName || invoiceRecord.company.companyName)))
     ),
-    billToName: fullName(createdBy),
+    billToName:
+      pickFirst(invoiceRecord && (invoiceRecord.submittedByName || invoiceRecord.createdByName)) ||
+      fullName(submitter),
     billToEmail: normalizeEmail(
-      pickFirst(createdBy && (createdBy.email || createdBy.emailId || createdBy.userEmail))
+      pickFirst(submitter && (submitter.email || submitter.emailId || submitter.userEmail))
     ),
-    customFields: extractFieldDisplayEntries(invoiceRecord && invoiceRecord.fields),
+    customFields: previewFields,
+    allFields: previewFields,
     lineItems: Array.isArray(lineRecords)
       ? lineRecords.map((line) => ({
           id: pickFirst(line && (line.invoiceLineItemId || line.id || line._id)),
           description: pickFirst(line && line.description),
-          quantity: normalizeAmount(line && line.quantity),
+          quantity: normalizeAmount(line && (line.quantity || line.qty || line.hours || line.qtyHours)),
           unitPrice: normalizeAmount(line && line.unitPrice),
           amount: normalizeAmount(line && line.amount),
           fields: extractFieldDisplayEntries(line && line.fields),
@@ -1622,7 +1799,14 @@ module.exports = {
           } catch (_error) {
             generatedPdfDataUrl = "";
           }
-          const preview = normalizeInvoicePreview(invoicePayload || {}, lineItems, payments);
+          const invoiceRecord = extractRecordObject(invoicePayload || {}, [
+            "invoice",
+            "data",
+            "result",
+            "payload",
+            "response",
+          ]) || {};
+          const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
           if (generatedPdfDataUrl) {
             preview.pdfDataUrl = generatedPdfDataUrl;
             preview.pdfSource = "api-v1-generate";
@@ -1661,7 +1845,12 @@ module.exports = {
       const projectsResult = await requestCollection(
         baseUrl,
         headers,
-        ["/api/1.0/projects"],
+        [
+          "/api/1.0/projects?includeFields=fields,customFields,teamMembers,company",
+          "/api/1.0/projects?includeFields=fields,customFields",
+          "/api/1.0/projects?includeFields=fields",
+          "/api/1.0/projects",
+        ],
         ["projects", "data", "content", "results", "items"]
       );
 
@@ -1686,7 +1875,8 @@ module.exports = {
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
-      globalInvoices.forEach((row) => {
+      for (let idx = 0; idx < globalInvoices.length; idx += 1) {
+        const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
         const normalized = normalizeInvoiceRecord(
           row,
@@ -1694,9 +1884,30 @@ module.exports = {
           request.accountName || iParams.accountName || ""
         );
         if (normalized) {
+          if (Number(normalized.quantityHours || 0) <= 0) {
+            const invoiceId = encodeURIComponent(
+              pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
+            );
+            if (invoiceId) {
+              const lineFetch = await requestCollection(
+                baseUrl,
+                headers,
+                [
+                  `/api/1.0/invoices/${invoiceId}/lines`,
+                  `/api/v1/invoices/${invoiceId}/lines`,
+                ],
+                ["data", "lines", "items", "results"]
+              );
+              diagnostics.invoiceErrors.push(...lineFetch.errors);
+              const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
+              if (fetchedQuantity > 0) {
+                normalized.quantityHours = fetchedQuantity;
+              }
+            }
+          }
           collectedInvoices.push(normalized);
         }
-      });
+      }
 
       const membersResult = await requestCollection(
         baseUrl,

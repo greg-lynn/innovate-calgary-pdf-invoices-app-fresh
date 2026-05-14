@@ -1174,6 +1174,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     record.submittedBy && record.submittedBy.userId,
     record.submittedByUser && record.submittedByUser.id,
     record.submittedByUser && record.submittedByUser.userId,
+    extractUserIdValue(record.createdBy),
+    extractUserIdValue(record.submittedBy),
+    extractUserIdValue(record.updatedBy),
     record.createdBy && record.createdBy.id,
     record.createdBy && record.createdBy.userId,
     record.user && record.user.id,
@@ -1213,8 +1216,11 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     : "";
   const createdByName =
     pickFirst(
-      fullName(record.createdBy) ||
-        pickFirst(record.createdByName) ||
+      (isLikelyDisplayName(record.createdByName) ? record.createdByName : "") ||
+        extractUserDisplayName(record.createdBy) ||
+        extractUserDisplayName(record.submittedBy) ||
+        extractUserDisplayName(record.createdByUser) ||
+        fullName(record.createdBy) ||
         (record.createdByUser &&
           (record.createdByUser.name ||
             [pickFirst(record.createdByUser.firstName), pickFirst(record.createdByUser.lastName)]
@@ -1254,6 +1260,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ) || projectInfo.ownerName || "Unassigned",
     accountName:
       pickPreferredAccountName([
+        record.toCompany && (record.toCompany.companyName || record.toCompany.name),
         record.accountName,
         record.account && (record.account.accountName || record.account.name),
         record.customer && (record.customer.accountName || record.customer.companyName || record.customer.name),
@@ -1275,11 +1282,17 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     createdByName,
     createdByUserId: pickFirst(
       record.createdByUserId ||
+        extractUserIdValue(record.createdBy) ||
+        extractUserIdValue(record.createdByUser) ||
+        extractUserIdValue(record.submittedBy) ||
         (record.createdBy && (record.createdBy.userId || record.createdBy.id)) ||
         (record.createdByUser && (record.createdByUser.userId || record.createdByUser.id))
     ),
     createdByEmail: normalizeEmail(
       pickFirst(
+        extractUserEmailValue(record.createdBy) ||
+          extractUserEmailValue(record.createdByUser) ||
+          extractUserEmailValue(record.submittedBy) ||
         (record.createdBy &&
           (record.createdBy.email || record.createdBy.emailId || record.createdBy.userEmail)) ||
           (record.createdByUser &&
@@ -2198,12 +2211,7 @@ module.exports = {
       const projectsResult = await requestCollection(
         baseUrl,
         headers,
-        [
-          "/api/1.0/projects?includeFields=fields,customFields,teamMembers,company",
-          "/api/1.0/projects?includeFields=fields,customFields",
-          "/api/1.0/projects?includeFields=fields",
-          "/api/1.0/projects",
-        ],
+        ["/api/1.0/projects"],
         ["projects", "data", "content", "results", "items"]
       );
 
@@ -2217,9 +2225,7 @@ module.exports = {
         baseUrl,
         headers,
         [
-          "/api/v1/invoices?type=all",
           "/api/v1/invoices",
-          "/api/1.0/invoices?type=all",
           "/api/1.0/invoices",
         ],
         ["invoices", "data", "content", "results", "items"]
@@ -2228,6 +2234,7 @@ module.exports = {
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
+      const quantityBackfillTasks = [];
       for (let idx = 0; idx < globalInvoices.length; idx += 1) {
         const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
@@ -2240,62 +2247,36 @@ module.exports = {
           const invoiceId = encodeURIComponent(
             pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
           );
-          const needsDetailEnrichment =
-            !isLikelyDisplayName(normalized.ownerName) ||
-            isGenericAccountName(normalized.accountName) ||
-            !pickFirst(normalized.createdByUserId);
-          if (invoiceId && needsDetailEnrichment) {
-            try {
-              let detailPayload = null;
-              try {
-                detailPayload = await requestJson(
-                  ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${invoiceId}`),
-                  headers
-                );
-              } catch (_detailError) {
-                detailPayload = await requestJson(
-                  ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${invoiceId}`),
-                  headers
-                );
-              }
-              const detailRecord = extractRecordObject(detailPayload || {}, [
-                "invoice",
-                "data",
-                "result",
-                "payload",
-                "response",
-              ]) || {};
-              normalized = enrichInvoiceFromDetailPayload(
-                normalized,
-                detailRecord,
-                projectLookup
-              );
-            } catch (detailError) {
-              diagnostics.invoiceErrors.push(
-                String(detailError && detailError.message ? detailError.message : detailError)
-              );
-            }
-          }
           if (Number(normalized.quantityHours || 0) <= 0) {
             if (invoiceId) {
-              const lineFetch = await requestCollection(
-                baseUrl,
-                headers,
-                [
-                  `/api/1.0/invoices/${invoiceId}/lines`,
-                  `/api/v1/invoices/${invoiceId}/lines`,
-                ],
-                ["data", "lines", "items", "results"]
+              const targetInvoice = normalized;
+              quantityBackfillTasks.push(
+                requestCollection(
+                  baseUrl,
+                  headers,
+                  [`/api/1.0/invoices/${invoiceId}/lines`],
+                  ["data", "lines", "items", "results"]
+                )
+                  .then((lineFetch) => {
+                    diagnostics.invoiceErrors.push(...lineFetch.errors);
+                    const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
+                    if (fetchedQuantity > 0) {
+                      targetInvoice.quantityHours = fetchedQuantity;
+                    }
+                  })
+                  .catch((lineError) => {
+                    diagnostics.invoiceErrors.push(
+                      String(lineError && lineError.message ? lineError.message : lineError)
+                    );
+                  })
               );
-              diagnostics.invoiceErrors.push(...lineFetch.errors);
-              const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
-              if (fetchedQuantity > 0) {
-                normalized.quantityHours = fetchedQuantity;
-              }
             }
           }
           collectedInvoices.push(normalized);
         }
+      }
+      if (quantityBackfillTasks.length) {
+        await Promise.all(quantityBackfillTasks);
       }
 
       const membersResult = await requestCollection(

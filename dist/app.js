@@ -1441,9 +1441,7 @@
 
     const invoiceRows = await requestCollection(
       [
-        "/api/v1/invoices?type=all",
         "/api/v1/invoices",
-        "/api/1.0/invoices?type=all",
         "/api/1.0/invoices",
       ],
       ["invoices", "data", "content", "results", "items"]
@@ -2117,6 +2115,15 @@
     push(node.createdByUserId);
     push(node.submittedByUserId);
     push(node.approvedByUserId);
+    if (typeof node.createdBy === "number" || typeof node.createdBy === "string") {
+      push(node.createdBy);
+    }
+    if (typeof node.submittedBy === "number" || typeof node.submittedBy === "string") {
+      push(node.submittedBy);
+    }
+    if (typeof node.updatedBy === "number" || typeof node.updatedBy === "string") {
+      push(node.updatedBy);
+    }
     if (node.createdBy && typeof node.createdBy === "object") {
       push(node.createdBy.id || node.createdBy.userId || node.createdBy.userID);
     }

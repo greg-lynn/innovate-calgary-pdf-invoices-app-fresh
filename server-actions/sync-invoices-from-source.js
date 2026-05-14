@@ -133,12 +133,25 @@ function isLikelyDisplayName(value) {
 function pickPreferredAccountName(candidates) {
   const values = (Array.isArray(candidates) ? candidates : []).map((value) => pickFirst(value));
   const informative = values.find(
-    (value) => value && normalizeFieldLabel(value) !== "rocketlane account"
+    (value) =>
+      value &&
+      normalizeFieldLabel(value) !== "rocketlane account" &&
+      normalizeFieldLabel(value) !== "rocketlane workspace"
   );
   if (informative) {
     return informative;
   }
   return values.find(Boolean) || "";
+}
+
+function isGenericAccountName(value) {
+  const normalized = normalizeFieldLabel(value);
+  return (
+    !normalized ||
+    normalized === "rocketlane account" ||
+    normalized === "rocketlane workspace" ||
+    normalized === "account"
+  );
 }
 
 function normalizeFieldLabel(value) {
@@ -675,6 +688,25 @@ function extractInvoiceProjectIds(record) {
       )
     );
   });
+  if (Array.isArray(record.projects)) {
+    record.projects.forEach((project) => {
+      ids.push(
+        pickFirst(
+          project && (project.projectId || project.id || project._id || project.projectID)
+        )
+      );
+    });
+  }
+  if (record.projects && typeof record.projects === "object" && !Array.isArray(record.projects)) {
+    ids.push(
+      pickFirst(
+        record.projects.projectId ||
+          record.projects.id ||
+          record.projects._id ||
+          record.projects.projectID
+      )
+    );
+  }
   return dedupeStrings(ids);
 }
 
@@ -746,6 +778,22 @@ function resolveProjectForInvoice(record, projectLookup) {
   const directProject = normalizeProject(record.project);
   if (directProject) {
     return directProject;
+  }
+  if (Array.isArray(record.projects)) {
+    for (let i = 0; i < record.projects.length; i += 1) {
+      const candidate = record.projects[i] || {};
+      const normalizedCandidate = normalizeProject(candidate);
+      if (normalizedCandidate) {
+        return normalizedCandidate;
+      }
+      const candidateName = pickFirst(
+        candidate.projectName || candidate.name || candidate.projectTitle || candidate.label
+      );
+      const candidateCanonical = canonicalProjectName(candidateName);
+      if (candidateCanonical && lookup.byCanonicalName.has(candidateCanonical)) {
+        return lookup.byCanonicalName.get(candidateCanonical);
+      }
+    }
   }
   const directName = pickFirst(record.projectName || record.projectTitle);
   const directCanonical = canonicalProjectName(directName);
@@ -1225,6 +1273,36 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     currencySymbol,
     pdfUrl,
     createdByName,
+    createdByUserId: pickFirst(
+      record.createdByUserId ||
+        (record.createdBy && (record.createdBy.userId || record.createdBy.id)) ||
+        (record.createdByUser && (record.createdByUser.userId || record.createdByUser.id))
+    ),
+    createdByEmail: normalizeEmail(
+      pickFirst(
+        (record.createdBy &&
+          (record.createdBy.email || record.createdBy.emailId || record.createdBy.userEmail)) ||
+          (record.createdByUser &&
+            (record.createdByUser.email ||
+              record.createdByUser.emailId ||
+              record.createdByUser.userEmail))
+      )
+    ),
+    submittedByUserId: pickFirst(
+      record.submittedByUserId ||
+        (record.submittedBy && (record.submittedBy.userId || record.submittedBy.id)) ||
+        (record.submittedByUser && (record.submittedByUser.userId || record.submittedByUser.id))
+    ),
+    submittedByEmail: normalizeEmail(
+      pickFirst(
+        (record.submittedBy &&
+          (record.submittedBy.email || record.submittedBy.emailId || record.submittedBy.userEmail)) ||
+          (record.submittedByUser &&
+            (record.submittedByUser.email ||
+              record.submittedByUser.emailId ||
+              record.submittedByUser.userEmail))
+      )
+    ),
     contractName,
     hub,
     program,
@@ -1475,6 +1553,97 @@ function normalizeMember(record) {
         record.title
     ),
   };
+}
+
+function buildMemberLookups(members) {
+  const byId = new Map();
+  const byEmail = new Map();
+  (Array.isArray(members) ? members : []).forEach((member) => {
+    if (!member || typeof member !== "object") {
+      return;
+    }
+    const id = pickFirst(member.id);
+    const email = normalizeEmail(member.email);
+    const name = pickFirst(member.name);
+    if (id && name) {
+      byId.set(id, name);
+    }
+    if (email && name) {
+      byEmail.set(email, name);
+    }
+  });
+  return { byId, byEmail };
+}
+
+function resolveMemberDisplayNameFromInvoice(invoice, lookups) {
+  const memberLookups = lookups || { byId: new Map(), byEmail: new Map() };
+  const idCandidates = dedupeStrings([
+    pickFirst(invoice.createdByUserId),
+    pickFirst(invoice.submittedByUserId),
+  ].concat(Array.isArray(invoice.associatedUserIds) ? invoice.associatedUserIds : []));
+  for (let i = 0; i < idCandidates.length; i += 1) {
+    const id = idCandidates[i];
+    if (id && memberLookups.byId.has(id)) {
+      return pickFirst(memberLookups.byId.get(id));
+    }
+  }
+  const emailCandidates = dedupeStrings([
+    normalizeEmail(invoice.createdByEmail),
+    normalizeEmail(invoice.submittedByEmail),
+  ].concat(Array.isArray(invoice.associatedEmails) ? invoice.associatedEmails : []));
+  for (let i = 0; i < emailCandidates.length; i += 1) {
+    const email = normalizeEmail(emailCandidates[i]);
+    if (email && memberLookups.byEmail.has(email)) {
+      return pickFirst(memberLookups.byEmail.get(email));
+    }
+  }
+  return "";
+}
+
+function resolveProjectAccountForInvoice(invoice, projectLookup) {
+  const lookup = projectLookup || { byId: new Map(), byCanonicalName: new Map() };
+  const sourceProjectId = pickFirst(invoice && invoice.sourceProjectId);
+  if (sourceProjectId && lookup.byId.has(sourceProjectId)) {
+    const project = lookup.byId.get(sourceProjectId) || {};
+    const account = pickFirst(project.accountName);
+    if (!isGenericAccountName(account)) {
+      return account;
+    }
+  }
+  const sourceProjectName = pickFirst(invoice && invoice.sourceProjectName);
+  const sourceProjectCanonical = canonicalProjectName(sourceProjectName);
+  if (sourceProjectCanonical && lookup.byCanonicalName.has(sourceProjectCanonical)) {
+    const project = lookup.byCanonicalName.get(sourceProjectCanonical) || {};
+    const account = pickFirst(project.accountName);
+    if (!isGenericAccountName(account)) {
+      return account;
+    }
+  }
+  return "";
+}
+
+function enrichInvoiceDisplayData(invoice, memberLookups, projectLookup) {
+  if (!invoice || typeof invoice !== "object") {
+    return invoice;
+  }
+  const next = Object.assign({}, invoice);
+  const ownerNeedsOverride =
+    !isLikelyDisplayName(next.ownerName) || normalizeFieldLabel(next.ownerName) === "unassigned";
+  if (ownerNeedsOverride) {
+    const fromMember = resolveMemberDisplayNameFromInvoice(next, memberLookups);
+    const fallbackOwner = pickFirst(next.createdByName || next.ownerName);
+    const resolvedOwner = pickFirst(fromMember || fallbackOwner);
+    if (resolvedOwner) {
+      next.ownerName = resolvedOwner;
+    }
+  }
+  if (isGenericAccountName(next.accountName)) {
+    const projectAccount = resolveProjectAccountForInvoice(next, projectLookup);
+    if (projectAccount) {
+      next.accountName = projectAccount;
+    }
+  }
+  return next;
 }
 
 function collectRoleTokens(value, target, depth) {
@@ -1987,6 +2156,10 @@ module.exports = {
       const membersWithViewer = viewerFromApi
         ? [viewerFromApi].concat(normalizedMembers)
         : normalizedMembers;
+      const memberLookups = buildMemberLookups(membersWithViewer);
+      const enrichedInvoices = collectedInvoices.map((invoice) =>
+        enrichInvoiceDisplayData(invoice, memberLookups, projectLookup)
+      );
       const viewerSeed = mergeObjects(viewer, viewerFromApi || {});
       const resolvedLoopViewer = resolveViewerFromMembers(
         viewerSeed,
@@ -1998,9 +2171,9 @@ module.exports = {
         diagnostics.workspaceUsed = workspaceCandidatesForFetch[0] || "";
         diagnostics.apiBaseUsed = baseUrl;
         sourceProjects = dedupeStrings(
-          collectedInvoices.map((invoice) => pickFirst(invoice && invoice.sourceProjectName))
+          enrichedInvoices.map((invoice) => pickFirst(invoice && invoice.sourceProjectName))
         );
-        invoices = collectedInvoices;
+        invoices = enrichedInvoices;
         members = normalizedMembers;
         resolvedViewer = resolvedLoopViewer;
         break;

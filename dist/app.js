@@ -2758,6 +2758,9 @@
               .filter(Boolean)
               .join(" ")))
     );
+    const preferredCreatedByName = isLikelyDisplayName(createdByRecordName)
+      ? createdByRecordName
+      : "";
     const nodeContacts = extractContacts(node);
     const submittedByName = pickFirst(
       node.submittedByName ||
@@ -2775,7 +2778,7 @@
     );
     const ownerName =
       pickFirst(
-        createdByRecordName ||
+        preferredCreatedByName ||
           createdByFieldName ||
           submittedByName ||
           node.projectManagerName ||
@@ -2829,7 +2832,7 @@
           node.companyName,
           accountFieldValue,
           project.accountName,
-          state.context.accountName,
+          state.context && state.context.accountName,
           "Rocketlane Account",
         ]) || "Rocketlane Account",
       contractName: pickFirst(

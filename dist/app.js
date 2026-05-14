@@ -1240,7 +1240,7 @@
         serverActionAttempted: true,
       });
       const workspaceCandidates = getWorkspaceCandidates();
-      const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
+      const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
@@ -3458,7 +3458,7 @@
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
-    const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
+    const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     try {
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
@@ -3554,9 +3554,22 @@
     }
   }
 
+  function workspaceHost(value) {
+    const text = pickFirst(value);
+    if (!text) {
+      return "";
+    }
+    try {
+      return String(new URL(text).hostname || "").toLowerCase();
+    } catch (_error) {
+      return "";
+    }
+  }
+
   function getWorkspaceCandidates() {
     const candidates = [];
     const runtimeWorkspace = getCurrentWorkspaceBaseUrl();
+    const runtimeHost = workspaceHost(runtimeWorkspace);
     if (runtimeWorkspace) {
       candidates.push(runtimeWorkspace);
     }
@@ -3567,7 +3580,12 @@
           state.rawAccount.domain)
     );
     if (accountDomain) {
-      candidates.unshift("https://" + accountDomain.replace(/^https?:\/\//i, ""));
+      const accountWorkspace =
+        "https://" + accountDomain.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+      const accountHost = workspaceHost(accountWorkspace);
+      if (!runtimeHost || (accountHost && accountHost === runtimeHost)) {
+        candidates.push(accountWorkspace);
+      }
     }
     return dedupeStrings(candidates);
   }
@@ -3863,7 +3881,7 @@
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
-    const workspaceBaseUrl = workspaceCandidates[0] || getCurrentWorkspaceBaseUrl() || "";
+    const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     const payload = await state.client.data.invoke("syncInvoicesFromSource", {
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",

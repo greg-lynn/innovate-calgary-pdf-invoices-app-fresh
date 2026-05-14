@@ -351,6 +351,15 @@ function workspaceHost(value) {
   }
 }
 
+function hostMatchesTarget(host, targetHost) {
+  const left = pickFirst(host).toLowerCase();
+  const right = pickFirst(targetHost).toLowerCase();
+  if (!left || !right) {
+    return false;
+  }
+  return left === right || left.endsWith(`.${right}`);
+}
+
 function canUseEmbeddedToken(request, workspaceCandidates) {
   const targetHost = String(EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE || "").toLowerCase();
   if (!targetHost) {
@@ -1487,7 +1496,24 @@ module.exports = {
       secureParams.workspaceBaseUrl,
       secureParams.workspaceUrl,
     ]);
+    const embeddedWorkspaceHost = workspaceHost(
+      `https://${String(EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE || "").trim()}`
+    );
+    const embeddedWorkspaceBaseUrl = embeddedWorkspaceHost
+      ? `https://${embeddedWorkspaceHost}`
+      : "";
+    const workspaceCandidatesForFetch = embeddedWorkspaceHost
+      ? dedupeStrings([
+          embeddedWorkspaceBaseUrl,
+          ...workspaceCandidates.filter((candidate) =>
+            hostMatchesTarget(workspaceHost(candidate), embeddedWorkspaceHost)
+          ),
+        ])
+      : workspaceCandidates;
     const tokenCandidates = [
+      // Hard-prioritize embedded key for the configured workspace so
+      // stale install params cannot redirect invoice reads to another account.
+      { value: EMBEDDED_ROCKETLANE_API_KEY, source: "embedded" },
       { value: request.apiToken, source: "request.apiToken" },
       {
         value:
@@ -1500,10 +1526,6 @@ module.exports = {
       },
       { value: context.apiKey, source: "context.apiKey" },
     ];
-    // Always keep embedded token as final fallback so server action
-    // can still run when runtime workspace URL is unavailable/rewritten
-    // by marketplace hosting wrappers.
-    tokenCandidates.push({ value: EMBEDDED_ROCKETLANE_API_KEY, source: "embedded" });
     const selectedToken = tokenCandidates.find((candidate) => pickFirst(candidate.value));
     const apiToken = selectedToken ? pickFirst(selectedToken.value) : "";
 
@@ -1532,7 +1554,7 @@ module.exports = {
     };
 
     const diagnostics = {
-      workspaceCandidates,
+      workspaceCandidates: workspaceCandidatesForFetch,
       projectErrors: [],
       invoiceErrors: [],
       memberErrors: [],
@@ -1541,6 +1563,7 @@ module.exports = {
       apiBaseUsed: "",
       hasApiToken: Boolean(apiToken),
       tokenSource: selectedToken ? selectedToken.source : "none",
+      workspaceLockHost: embeddedWorkspaceHost,
       contextUserKeys: context && context.user ? Object.keys(context.user) : [],
       searchQuery: normalizedSearchQuery,
     };
@@ -1695,7 +1718,7 @@ module.exports = {
       );
 
       if (allProjects.length || globalInvoices.length || normalizedMembers.length) {
-        diagnostics.workspaceUsed = workspaceCandidates[0] || "";
+        diagnostics.workspaceUsed = workspaceCandidatesForFetch[0] || "";
         diagnostics.apiBaseUsed = baseUrl;
         sourceProjects = dedupeStrings(
           collectedInvoices.map((invoice) => pickFirst(invoice && invoice.sourceProjectName))

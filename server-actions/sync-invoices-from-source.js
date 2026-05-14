@@ -3,7 +3,7 @@
 const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 // Production override: embed API key here so app works without installer prompt.
 // Replace before shipping to users if needed.
-const EMBEDDED_ROCKETLANE_API_KEY = "rl-7e0f30b5-1aab-4faf-837c-6a3ec5cbfde7";
+const EMBEDDED_ROCKETLANE_API_KEY = "rl-6657ce9e-ee84-465d-b4df-d97b1239a343";
 const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
 

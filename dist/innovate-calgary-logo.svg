@@ -1,0 +1,18 @@
+<svg width="220" height="220" viewBox="0 0 220 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="220" height="220" fill="#FFFFFF"/>
+  <polygon points="110,10 190,55 150,78 110,55" fill="#80C84A"/>
+  <polygon points="190,55 190,145 150,122 150,78" fill="#1E88C8"/>
+  <polygon points="190,145 110,190 110,145 150,122" fill="#3F51B5"/>
+  <polygon points="110,190 30,145 70,122 110,145" fill="#F57C2F"/>
+  <polygon points="30,145 30,55 70,78 70,122" fill="#D8437D"/>
+  <polygon points="30,55 110,10 110,55 70,78" fill="#A6CE39"/>
+
+  <polygon points="110,30 173,66 141,84 110,66" fill="#66BB6A" opacity="0.8"/>
+  <polygon points="173,66 173,134 141,116 141,84" fill="#26A69A" opacity="0.8"/>
+  <polygon points="173,134 110,170 110,134 141,116" fill="#5C6BC0" opacity="0.8"/>
+  <polygon points="110,170 47,134 79,116 110,134" fill="#EF6C00" opacity="0.8"/>
+  <polygon points="47,134 47,66 79,84 79,116" fill="#EC407A" opacity="0.8"/>
+  <polygon points="47,66 110,30 110,66 79,84" fill="#9CCC65" opacity="0.8"/>
+
+  <polygon points="110,70 145,90 145,130 110,150 75,130 75,90" fill="#FFFFFF"/>
+</svg>

@@ -3430,13 +3430,6 @@
     refs.modalTitle.textContent = invoice.invoiceNumber + " · " + invoice.invoiceName;
     refs.pdfModal.classList.remove("hidden");
     refs.pdfModal.setAttribute("aria-hidden", "false");
-    if (invoice.pdfUrl) {
-      refs.modalInvoicePreview.classList.add("hidden");
-      refs.modalInvoicePreview.innerHTML = "";
-      refs.modalPdfFrame.classList.remove("hidden");
-      setModalPdfFrameSrc(invoice.pdfUrl);
-      return;
-    }
     refs.modalInvoicePreview.classList.add("hidden");
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
@@ -3788,12 +3781,7 @@
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
         refs.modalPdfFrame.classList.remove("hidden");
-        if (cached.preview) {
-          refs.modalInvoicePreview.classList.remove("hidden");
-          renderInvoicePreviewContent(invoice, cached.preview, false, "");
-        } else {
-          refs.modalInvoicePreview.classList.add("hidden");
-        }
+        refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
@@ -3801,7 +3789,10 @@
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
         preview && typeof preview === "object" ? String(preview.pdfDataUrl || "").trim() : "";
-      if (generatedPdfDataUrl) {
+      const generatedPdfBytes = generatedPdfDataUrl
+        ? pdfDataUrlToBytes(generatedPdfDataUrl)
+        : null;
+      if (looksLikePdfBytes(generatedPdfBytes) && generatedPdfDataUrl) {
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,
@@ -3810,25 +3801,14 @@
           };
         }
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.remove("hidden");
-        renderInvoicePreviewContent(invoice, preview, false, "");
+        refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
         return;
       }
       const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
-      if (setModalPdfFrameFromBytes(nativePdfBytes)) {
+      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
         refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.remove("hidden");
-        renderInvoicePreviewContent(invoice, preview, false, "");
-        return;
-      }
-      const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-      if (pdfDataUrl) {
-        // Do not persist fallback PDFs in cache; allow future native preview retries.
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.remove("hidden");
-        renderInvoicePreviewContent(invoice, preview, false, "");
-        setModalPdfFrameSrc(pdfDataUrl);
+        refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
@@ -3837,7 +3817,7 @@
         invoice,
         preview,
         false,
-        "Unable to render invoice PDF. Showing structured details instead."
+        "Unable to load native invoice PDF preview right now."
       );
     } catch (_error) {
       refs.modalPdfFrame.classList.add("hidden");

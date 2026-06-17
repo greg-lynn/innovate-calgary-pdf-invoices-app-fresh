@@ -649,6 +649,18 @@ function bytesToPdfDataUrl(bytes) {
   return `data:application/pdf;base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
+function looksLikePdfBytes(bytes) {
+  return (
+    bytes instanceof Uint8Array &&
+    bytes.byteLength >= 5 &&
+    bytes[0] === 0x25 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x44 &&
+    bytes[3] === 0x46 &&
+    bytes[4] === 0x2d
+  );
+}
+
 function canonicalInvoiceNumber(value) {
   return String(value || "")
     .toUpperCase()
@@ -2161,7 +2173,7 @@ module.exports = {
               ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}/generate`),
               mergeObjects(headers, { Accept: "*/*" })
             );
-            generatedPdfDataUrl = bytesToPdfDataUrl(pdfBytes);
+            generatedPdfDataUrl = looksLikePdfBytes(pdfBytes) ? bytesToPdfDataUrl(pdfBytes) : "";
           } catch (_error) {
             generatedPdfDataUrl = "";
           }

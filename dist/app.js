@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618d";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618e";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3834,6 +3834,17 @@
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
+        return;
+      }
+      let nativePdfBytes = null;
+      try {
+        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+      } catch (_error) {
+        nativePdfBytes = null;
+      }
+      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");

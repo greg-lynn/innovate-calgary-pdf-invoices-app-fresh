@@ -673,6 +673,10 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
       source: "api-v1-generate",
     },
     {
+      path: `/api/1.0/invoices/${encodedId}/generate`,
+      source: "api-1-generate",
+    },
+    {
       path: `/api/v1/invoices/${encodedId}/attachments/download`,
       source: "api-v1-attachments-download",
     },
@@ -905,7 +909,14 @@ async function resolveInvoiceIdForPreview(
   const targetProjectId = pickFirst(previewSourceProjectId);
   const scored = rows
     .map((row) => {
-      const invoiceId = pickFirst(row && row.invoiceId);
+      const invoiceId = pickFirst(
+        row &&
+          (row.invoiceId ||
+            row.id ||
+            row._id ||
+            (row.invoice && (row.invoice.invoiceId || row.invoice.id || row.invoice._id)) ||
+            (row.data && (row.data.invoiceId || row.data.id || row.data._id)))
+      );
       if (!invoiceId) {
         return null;
       }

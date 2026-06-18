@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618c";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618d";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3816,26 +3816,6 @@
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
-      let nativePdfBytes = null;
-      try {
-        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
-      } catch (_error) {
-        nativePdfBytes = null;
-      }
-      if (looksLikePdfBytes(nativePdfBytes)) {
-        const nativePdfDataUrl = bytesToPdfDataUrl(nativePdfBytes);
-        if (cacheKey && nativePdfDataUrl) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: cached && cached.preview ? cached.preview : null,
-            pdfDataUrl: nativePdfDataUrl,
-            isNativePdf: true,
-          };
-        }
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(nativePdfDataUrl);
-        return;
-      }
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
@@ -3854,13 +3834,6 @@
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
-        return;
-      }
-      const directPdfUrl = resolveDirectPdfPreviewUrl(invoice);
-      if (directPdfUrl) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(directPdfUrl);
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");

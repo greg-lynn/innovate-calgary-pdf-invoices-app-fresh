@@ -661,6 +661,46 @@ function looksLikePdfBytes(bytes) {
   );
 }
 
+async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
+  const encodedId = String(previewInvoiceId || "").trim();
+  if (!encodedId) {
+    return { pdfDataUrl: "", pdfSource: "" };
+  }
+  const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
+  const pdfPaths = [
+    {
+      path: `/api/v1/invoices/${encodedId}/generate`,
+      source: "api-v1-generate",
+    },
+    {
+      path: `/api/v1/invoices/${encodedId}/attachments/download`,
+      source: "api-v1-attachments-download",
+    },
+    {
+      path: `/api/1.0/invoices/${encodedId}/attachments/download`,
+      source: "api-1-attachments-download",
+    },
+  ];
+  for (let i = 0; i < pdfPaths.length; i += 1) {
+    const candidate = pdfPaths[i];
+    try {
+      const pdfBytes = await requestBinary(
+        ensureAbsoluteUrl(baseUrl, candidate.path),
+        requestHeaders
+      );
+      if (looksLikePdfBytes(pdfBytes)) {
+        return {
+          pdfDataUrl: bytesToPdfDataUrl(pdfBytes),
+          pdfSource: candidate.source,
+        };
+      }
+    } catch (_error) {
+      // Ignore and continue with next candidate endpoint.
+    }
+  }
+  return { pdfDataUrl: "", pdfSource: "" };
+}
+
 function canonicalInvoiceNumber(value) {
   return String(value || "")
     .toUpperCase()
@@ -2148,68 +2188,104 @@ module.exports = {
             request.previewInvoiceNumber,
             request.previewSourceProjectId
           );
-          const previewInvoiceId = encodeURIComponent(String(resolvedInvoiceId || ""));
-          if (!previewInvoiceId) {
+          const previewInvoiceIds = dedupeStrings([
+            pickFirst(request.previewInvoiceId),
+            pickFirst(resolvedInvoiceId),
+          ])
+            .map((value) => encodeURIComponent(String(value || "").trim()))
+            .filter(Boolean);
+          if (!previewInvoiceIds.length) {
             throw new Error("Invoice ID could not be resolved for preview.");
           }
-          let invoicePayload = null;
-          try {
-            invoicePayload = await requestJson(
-              ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}`),
-              headers
-            );
-          } catch (_error) {
-            invoicePayload = await requestJson(
-              ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}`),
-              headers
-            );
+          let lastPreviewError = null;
+          for (let candidateIdx = 0; candidateIdx < previewInvoiceIds.length; candidateIdx += 1) {
+            const previewInvoiceId = previewInvoiceIds[candidateIdx];
+            try {
+              let invoicePayload = null;
+              try {
+                invoicePayload = await requestJson(
+                  ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}`),
+                  headers
+                );
+              } catch (_error) {
+                try {
+                  invoicePayload = await requestJson(
+                    ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}`),
+                    headers
+                  );
+                } catch (_fallbackError) {
+                  invoicePayload = null;
+                }
+              }
+              let lineItems = [];
+              try {
+                const linePayload = await requestJson(
+                  ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}/lines`),
+                  headers
+                );
+                lineItems = extractCollection(linePayload, ["data", "lines", "items", "results"]);
+              } catch (_error) {
+                lineItems = [];
+              }
+              let payments = [];
+              try {
+                const paymentPayload = await requestJson(
+                  ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}/payments`),
+                  headers
+                );
+                payments = extractCollection(paymentPayload, [
+                  "data",
+                  "payments",
+                  "items",
+                  "results",
+                ]);
+              } catch (_error) {
+                payments = [];
+              }
+              const previewPdf = await fetchPreviewPdfData(baseUrl, headers, previewInvoiceId);
+              const invoiceRecord = extractRecordObject(invoicePayload || {}, [
+                "invoice",
+                "data",
+                "result",
+                "payload",
+                "response",
+              ]) || {};
+              const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
+              if (previewPdf.pdfDataUrl) {
+                preview.pdfDataUrl = previewPdf.pdfDataUrl;
+                preview.pdfSource = previewPdf.pdfSource;
+              }
+              if (
+                preview.pdfDataUrl ||
+                lineItems.length ||
+                payments.length ||
+                Object.keys(invoiceRecord).length
+              ) {
+                return {
+                  ok: true,
+                  preview,
+                  viewer,
+                  diagnostics: mergeObjects(diagnostics, {
+                    apiBaseUsed: baseUrl,
+                    previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
+                    previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                  }),
+                };
+              }
+              lastPreviewError = new Error(
+                `No usable preview payload returned for invoice ${decodeURIComponent(previewInvoiceId)}`
+              );
+            } catch (previewError) {
+              lastPreviewError = previewError;
+              diagnostics.invoiceErrors.push(
+                String(previewError && previewError.message ? previewError.message : previewError)
+              );
+            }
           }
-          const linePayload = await requestJson(
-            ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}/lines`),
-            headers
-          );
-          const paymentPayload = await requestJson(
-            ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${previewInvoiceId}/payments`),
-            headers
-          );
-          const lineItems = extractCollection(linePayload, ["data", "lines", "items", "results"]);
-          const payments = extractCollection(paymentPayload, [
-            "data",
-            "payments",
-            "items",
-            "results",
-          ]);
-          let generatedPdfDataUrl = "";
-          try {
-            const pdfBytes = await requestBinary(
-              ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${previewInvoiceId}/generate`),
-              mergeObjects(headers, { Accept: "*/*" })
-            );
-            generatedPdfDataUrl = looksLikePdfBytes(pdfBytes) ? bytesToPdfDataUrl(pdfBytes) : "";
-          } catch (_error) {
-            generatedPdfDataUrl = "";
+          if (lastPreviewError) {
+            throw lastPreviewError;
           }
-          const invoiceRecord = extractRecordObject(invoicePayload || {}, [
-            "invoice",
-            "data",
-            "result",
-            "payload",
-            "response",
-          ]) || {};
-          const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
-          if (generatedPdfDataUrl) {
-            preview.pdfDataUrl = generatedPdfDataUrl;
-            preview.pdfSource = "api-v1-generate";
-          }
-          return {
-            ok: true,
-            preview,
-            viewer,
-            diagnostics: mergeObjects(diagnostics, {
-              apiBaseUsed: baseUrl,
-              previewInvoiceResolvedId: String(resolvedInvoiceId || ""),
-            }),
-          };
+          throw new Error("Invoice ID could not be resolved for preview.");
         } catch (error) {
           diagnostics.invoiceErrors.push(
             String(error && error.message ? error.message : error)

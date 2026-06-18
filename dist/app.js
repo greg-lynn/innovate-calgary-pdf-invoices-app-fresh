@@ -2958,7 +2958,11 @@
   }
 
   async function extractTextFromPdfBuffer(buffer, maxPages) {
-    const loadingTask = window.pdfjsLib.getDocument({ data: buffer });
+    const loadingTask = window.pdfjsLib.getDocument({
+      data: buffer,
+      // Embedded iframes may block worker script fetches; use main-thread parsing.
+      disableWorker: true,
+    });
     try {
       const pdfDocument = await loadingTask.promise;
       const pages = Math.min(pdfDocument.numPages || 0, maxPages || pdfDocument.numPages);
@@ -3812,6 +3816,26 @@
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
+      let nativePdfBytes = null;
+      try {
+        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+      } catch (_error) {
+        nativePdfBytes = null;
+      }
+      if (looksLikePdfBytes(nativePdfBytes)) {
+        const nativePdfDataUrl = bytesToPdfDataUrl(nativePdfBytes);
+        if (cacheKey && nativePdfDataUrl) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: cached && cached.preview ? cached.preview : null,
+            pdfDataUrl: nativePdfDataUrl,
+            isNativePdf: true,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(nativePdfDataUrl);
+        return;
+      }
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
@@ -3830,6 +3854,13 @@
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
+        return;
+      }
+      const directPdfUrl = resolveDirectPdfPreviewUrl(invoice);
+      if (directPdfUrl) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(directPdfUrl);
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
@@ -3910,7 +3941,7 @@
     if (!invoiceId) {
       return "";
     }
-    const baseUrl = getWorkspaceCandidates()[0] || "";
+    const baseUrl = getCurrentWorkspaceBaseUrl() || getWorkspaceCandidates()[0] || "";
     if (!baseUrl) {
       return "";
     }
@@ -3927,7 +3958,7 @@
     if (!invoiceId) {
       return [];
     }
-    const baseUrl = getWorkspaceCandidates()[0] || "";
+    const baseUrl = getCurrentWorkspaceBaseUrl() || getWorkspaceCandidates()[0] || "";
     if (!baseUrl) {
       return [];
     }
@@ -3939,6 +3970,14 @@
       `${normalizedBase}/invoices/${encodedId}/attachments/download`,
       resolveNativeInvoiceDownloadUrl(invoice),
     ]);
+  }
+
+  function resolveDirectPdfPreviewUrl(invoice) {
+    const candidates = resolveNativeInvoicePdfUrlCandidates(invoice);
+    if (!candidates.length) {
+      return "";
+    }
+    return String(candidates[0] || "").trim();
   }
 
   async function tryExtractPdfBytesFromZip(buffer) {
@@ -5837,6 +5876,9 @@
   // Ensure PDF.js worker path is configured when available.
   if (window.pdfjsLib && window.pdfjsLib.GlobalWorkerOptions) {
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDF_WORKER_CDN;
+  }
+  if (window.pdfjsLib && Object.prototype.hasOwnProperty.call(window.pdfjsLib, "disableWorker")) {
+    window.pdfjsLib.disableWorker = true;
   }
 
   // Extract standalone emails from any string that may contain free text.

@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "rbac-permission-fallback-20260513c";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,

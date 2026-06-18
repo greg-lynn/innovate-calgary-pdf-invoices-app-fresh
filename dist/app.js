@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618a";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618b";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1376,10 +1376,37 @@
       if (
         current.ok !== undefined ||
         current.error ||
+        current.preview ||
         current.invoices ||
         current.sourceProjects ||
         current.teamMembers
       ) {
+        return current;
+      }
+      current =
+        current.data ||
+        current.response ||
+        current.result ||
+        current.payload ||
+        current.body ||
+        null;
+    }
+    return null;
+  }
+
+  function extractPreviewFromServerActionPayload(payload) {
+    let current = payload;
+    for (let i = 0; i < 8; i += 1) {
+      if (!current || typeof current !== "object") {
+        return null;
+      }
+      if (Array.isArray(current)) {
+        return null;
+      }
+      if (current.preview && typeof current.preview === "object") {
+        return current.preview;
+      }
+      if (typeof current.pdfDataUrl === "string" || Array.isArray(current.lineItems)) {
         return current;
       }
       current =
@@ -4251,16 +4278,24 @@
       if (!attempt.previewInvoiceId && !attempt.previewInvoiceNumber) {
         continue;
       }
-      const payload = await state.client.data.invoke(
-        "syncInvoicesFromSource",
-        Object.assign({}, baseRequest, attempt)
-      );
-      const result = unwrapServerActionResponse(payload);
-      if (!result || result.ok === false) {
-        continue;
-      }
-      if (result.preview) {
-        return result.preview;
+      try {
+        const payload = await state.client.data.invoke(
+          "syncInvoicesFromSource",
+          Object.assign({}, baseRequest, attempt)
+        );
+        const directPreview = extractPreviewFromServerActionPayload(payload);
+        if (directPreview) {
+          return directPreview;
+        }
+        const result = unwrapServerActionResponse(payload);
+        if (!result || result.ok === false) {
+          continue;
+        }
+        if (result.preview) {
+          return result.preview;
+        }
+      } catch (_error) {
+        // Try the next preview lookup strategy.
       }
     }
     return null;

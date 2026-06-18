@@ -811,6 +811,62 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
   return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
 }
 
+async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostics) {
+  if (!baseUrl || !Array.isArray(invoices) || !invoices.length) {
+    return;
+  }
+  const maxConcurrency = 4;
+  const queue = invoices
+    .map((invoice) => ({
+      invoice,
+      invoiceId: pickFirst(invoice && (invoice.invoiceId || invoice.id)),
+    }))
+    .filter((entry) => entry.invoice && entry.invoiceId);
+  if (!queue.length) {
+    diagnostics.previewPdfPrefetch = {
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+    };
+    return;
+  }
+
+  let index = 0;
+  let succeeded = 0;
+  let failed = 0;
+
+  const workers = Array.from({ length: Math.min(maxConcurrency, queue.length) }, () =>
+    (async () => {
+      while (index < queue.length) {
+        const currentIndex = index;
+        index += 1;
+        const entry = queue[currentIndex];
+        const invoiceId = encodeURIComponent(entry.invoiceId);
+        try {
+          const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId);
+          if (previewPdf && previewPdf.pdfBase64) {
+            entry.invoice.previewPdfBase64 = previewPdf.pdfBase64;
+            entry.invoice.previewPdfDataUrl = previewPdf.pdfDataUrl;
+            entry.invoice.previewPdfSource = previewPdf.pdfSource;
+            succeeded += 1;
+          } else {
+            failed += 1;
+          }
+        } catch (_error) {
+          failed += 1;
+        }
+      }
+    })()
+  );
+
+  await Promise.all(workers);
+  diagnostics.previewPdfPrefetch = {
+    attempted: queue.length,
+    succeeded,
+    failed,
+  };
+}
+
 function canonicalInvoiceNumber(value) {
   return String(value || "")
     .toUpperCase()
@@ -2569,6 +2625,16 @@ module.exports = {
       : dedupedInvoices;
 
     resolvedViewer = resolveViewerFromMembers(resolvedViewer, members, request);
+
+    const shouldPrefetchPreviewPdfs = request.searchOnly !== true;
+    if (shouldPrefetchPreviewPdfs) {
+      await attachPreviewPdfToInvoices(
+        diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
+        headers,
+        dedupedInvoices,
+        diagnostics
+      );
+    }
 
     return {
       ok: true,

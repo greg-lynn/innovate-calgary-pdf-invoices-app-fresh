@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618g";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618h";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1394,12 +1394,30 @@
     return null;
   }
 
+  function normalizePdfDataUrl(value) {
+    const text = String(value || "").trim();
+    const marker = "base64,";
+    const idx = text.toLowerCase().indexOf(marker);
+    if (!text || idx < 0 || !/^data:application\/pdf/i.test(text)) {
+      return "";
+    }
+    const prefix = text.slice(0, idx + marker.length);
+    let encoded = text.slice(idx + marker.length).replace(/\s+/g, "");
+    // Handle base64url payloads just in case transport normalized symbols.
+    encoded = encoded.replace(/-/g, "+").replace(/_/g, "/");
+    encoded = encoded.replace(/ /g, "+");
+    const padding = encoded.length % 4;
+    if (padding) {
+      encoded += "=".repeat(4 - padding);
+    }
+    return prefix + encoded;
+  }
+
   function hasPreviewPdfDataUrl(preview) {
     if (!preview || typeof preview !== "object") {
       return false;
     }
-    const dataUrl = String(preview.pdfDataUrl || "").trim();
-    return dataUrl.startsWith("data:application/pdf;base64,");
+    return Boolean(normalizePdfDataUrl(preview.pdfDataUrl));
   }
 
   function collectPreviewCandidatesFromPayload(payload) {
@@ -3862,11 +3880,17 @@
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
-        preview && typeof preview === "object" ? String(preview.pdfDataUrl || "").trim() : "";
+        preview && typeof preview === "object"
+          ? normalizePdfDataUrl(preview.pdfDataUrl)
+          : "";
       const generatedPdfBytes = generatedPdfDataUrl
         ? pdfDataUrlToBytes(generatedPdfDataUrl)
         : null;
-      if (looksLikePdfBytes(generatedPdfBytes) && generatedPdfDataUrl) {
+      if (
+        generatedPdfDataUrl &&
+        (looksLikePdfBytes(generatedPdfBytes) ||
+          generatedPdfDataUrl.startsWith("data:application/pdf"))
+      ) {
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,

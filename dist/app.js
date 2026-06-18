@@ -3785,6 +3785,12 @@
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
+      const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
+      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        return;
+      }
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
@@ -3803,12 +3809,6 @@
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
-        return;
-      }
-      const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
-      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
@@ -3901,37 +3901,80 @@
     );
   }
 
-  async function fetchNativeInvoicePdfBytes(invoice) {
-    const nativeDownloadUrl = resolveNativeInvoiceDownloadUrl(invoice);
-    if (!nativeDownloadUrl) {
-      return null;
+  function resolveNativeInvoicePdfUrlCandidates(invoice) {
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    if (!invoiceId) {
+      return [];
     }
+    const baseUrl = getWorkspaceCandidates()[0] || "";
+    if (!baseUrl) {
+      return [];
+    }
+    const normalizedBase = baseUrl.replace(/\/+$/, "");
+    const encodedId = encodeURIComponent(String(invoiceId).trim());
+    return dedupeStrings([
+      `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
+      `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/invoices/${encodedId}/attachments/download`,
+      resolveNativeInvoiceDownloadUrl(invoice),
+    ]);
+  }
+
+  async function tryExtractPdfBytesFromZip(buffer) {
     try {
-      const response = await fetch(nativeDownloadUrl, {
-        method: "GET",
-        credentials: "include",
-      });
-      if (!response.ok) {
+      if (!window.JSZip || !buffer) {
         return null;
       }
-      const contentType = String(response.headers.get("content-type") || "").toLowerCase();
-      const disposition = String(
-        response.headers.get("content-disposition") || ""
-      ).toLowerCase();
-      const isPdfPayload =
-        contentType.indexOf("pdf") >= 0 ||
-        (contentType.indexOf("octet-stream") >= 0 && disposition.indexOf(".pdf") >= 0);
-      if (!isPdfPayload) {
+      const zip = await window.JSZip.loadAsync(buffer);
+      const names = Object.keys(zip.files || {}).filter((name) => /\.pdf$/i.test(name));
+      if (!names.length) {
         return null;
       }
-      const buffer = await response.arrayBuffer();
-      if (!buffer || !buffer.byteLength) {
+      const firstPdf = zip.files[names[0]];
+      if (!firstPdf) {
         return null;
       }
-      return new Uint8Array(buffer);
+      const pdfBytes = await firstPdf.async("uint8array");
+      return looksLikePdfBytes(pdfBytes) ? pdfBytes : null;
     } catch (_error) {
       return null;
     }
+  }
+
+  async function fetchNativeInvoicePdfBytes(invoice) {
+    const candidateUrls = resolveNativeInvoicePdfUrlCandidates(invoice);
+    if (!candidateUrls.length) {
+      return null;
+    }
+    for (let i = 0; i < candidateUrls.length; i += 1) {
+      const nativeDownloadUrl = candidateUrls[i];
+      try {
+        const response = await fetch(nativeDownloadUrl, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (!response.ok) {
+          continue;
+        }
+        const buffer = await response.arrayBuffer();
+        if (!buffer || !buffer.byteLength) {
+          continue;
+        }
+        const bytes = new Uint8Array(buffer);
+        if (looksLikePdfBytes(bytes)) {
+          return bytes;
+        }
+        if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+          const pdfFromZip = await tryExtractPdfBytesFromZip(buffer);
+          if (looksLikePdfBytes(pdfFromZip)) {
+            return pdfFromZip;
+          }
+        }
+      } catch (_error) {
+        // Keep trying the next candidate endpoint.
+      }
+    }
+    return null;
   }
 
   function createInvoicePdfDataUrl(invoice, preview) {

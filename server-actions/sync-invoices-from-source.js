@@ -2291,22 +2291,42 @@ module.exports = {
       contextUserKeys: context && context.user ? Object.keys(context.user) : [],
       searchQuery: normalizedSearchQuery,
     };
+    const previewInvoiceIdRequested = pickFirst(
+      request.previewInvoiceId ||
+        request.invoiceId ||
+        (request.preview && request.preview.invoiceId)
+    );
+    const previewInvoiceNumberRequested = pickFirst(
+      request.previewInvoiceNumber ||
+        request.invoiceNumberForPreview ||
+        request.invoiceNumber ||
+        (request.preview && request.preview.invoiceNumber)
+    );
+    const isPreviewRequest =
+      String(request.requestMode || request.mode || "").toLowerCase() === "preview" ||
+      Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested);
+    diagnostics.previewRequest = {
+      isPreviewRequest,
+      previewInvoiceIdRequested,
+      previewInvoiceNumberRequested,
+      requestMode: String(request.requestMode || request.mode || ""),
+    };
     const viewer = deriveViewerAccess(request, context);
     let resolvedViewer = viewer;
 
-    if (request.previewInvoiceId || request.previewInvoiceNumber) {
+    if (isPreviewRequest) {
       for (let i = 0; i < apiBaseCandidates.length; i += 1) {
         const baseUrl = apiBaseCandidates[i];
         try {
           const resolvedInvoiceId = await resolveInvoiceIdForPreview(
             baseUrl,
             headers,
-            request.previewInvoiceId,
-            request.previewInvoiceNumber,
+            previewInvoiceIdRequested,
+            previewInvoiceNumberRequested,
             request.previewSourceProjectId
           );
           const previewInvoiceIds = dedupeStrings([
-            pickFirst(request.previewInvoiceId),
+            previewInvoiceIdRequested,
             pickFirst(resolvedInvoiceId),
           ])
             .map((value) => encodeURIComponent(String(value || "").trim()))

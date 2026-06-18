@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618j";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618k";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4341,7 +4341,7 @@
     ) {
       return null;
     }
-    const previewInvoiceId = pickFirst(invoice.invoiceId || "");
+    const previewInvoiceId = pickFirst(invoice.invoiceId || invoice.id || "");
     const previewInvoiceNumber = pickFirst(invoice.invoiceNumber || "");
     if (!previewInvoiceId && !previewInvoiceNumber) {
       return null;
@@ -4349,10 +4349,17 @@
     const workspaceCandidates = getWorkspaceCandidates();
     const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     const baseRequest = {
+      requestMode: "preview",
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
       workspaceBaseUrl,
       workspaceCandidates,
+      invoiceId: previewInvoiceId,
+      invoiceNumberForPreview: previewInvoiceNumber,
+      preview: {
+        invoiceId: previewInvoiceId,
+        invoiceNumber: previewInvoiceNumber,
+      },
       previewSourceProjectId: pickFirst(invoice.sourceProjectId || ""),
       viewerContext: {
         userId: state.context.userId || "",
@@ -4367,9 +4374,24 @@
       },
     };
     const attempts = [
-      { previewInvoiceId, previewInvoiceNumber: "" },
-      { previewInvoiceId, previewInvoiceNumber },
-      { previewInvoiceId: "", previewInvoiceNumber },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber: "",
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: "",
+      },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber,
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: previewInvoiceNumber,
+      },
+      {
+        previewInvoiceId: "",
+        previewInvoiceNumber,
+        invoiceId: "",
+        invoiceNumberForPreview: previewInvoiceNumber,
+      },
     ];
     let fallbackPreview = null;
     const attemptDiagnostics = [];

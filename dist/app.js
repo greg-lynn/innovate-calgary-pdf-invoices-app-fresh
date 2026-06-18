@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618e";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618f";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4296,6 +4296,7 @@
       { previewInvoiceId: "", previewInvoiceNumber },
       { previewInvoiceId, previewInvoiceNumber: "" },
     ];
+    let fallbackPreview = null;
     for (let i = 0; i < attempts.length; i += 1) {
       const attempt = attempts[i];
       if (!attempt.previewInvoiceId && !attempt.previewInvoiceNumber) {
@@ -4308,20 +4309,33 @@
         );
         const directPreview = extractPreviewFromServerActionPayload(payload);
         if (directPreview) {
-          return directPreview;
+          const directPdfDataUrl = String(directPreview.pdfDataUrl || "").trim();
+          if (directPdfDataUrl) {
+            return directPreview;
+          }
+          if (!fallbackPreview) {
+            fallbackPreview = directPreview;
+          }
+          continue;
         }
         const result = unwrapServerActionResponse(payload);
         if (!result || result.ok === false) {
           continue;
         }
         if (result.preview) {
-          return result.preview;
+          const resultPdfDataUrl = String(result.preview.pdfDataUrl || "").trim();
+          if (resultPdfDataUrl) {
+            return result.preview;
+          }
+          if (!fallbackPreview) {
+            fallbackPreview = result.preview;
+          }
         }
       } catch (_error) {
         // Try the next preview lookup strategy.
       }
     }
-    return null;
+    return fallbackPreview;
   }
 
   function renderInvoicePreviewContent(invoice, preview, isLoading, errorText) {

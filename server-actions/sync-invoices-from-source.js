@@ -664,7 +664,7 @@ function looksLikePdfBytes(bytes) {
 async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
-    return { pdfDataUrl: "", pdfSource: "" };
+    return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
   }
   const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
   const pdfPaths = [
@@ -693,8 +693,10 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
         requestHeaders
       );
       if (looksLikePdfBytes(pdfBytes)) {
+        const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
         return {
-          pdfDataUrl: bytesToPdfDataUrl(pdfBytes),
+          pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
+          pdfBase64,
           pdfSource: candidate.source,
         };
       }
@@ -702,7 +704,7 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
       // Ignore and continue with next candidate endpoint.
     }
   }
-  return { pdfDataUrl: "", pdfSource: "" };
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
 }
 
 function canonicalInvoiceNumber(value) {
@@ -2264,6 +2266,7 @@ module.exports = {
               const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
               if (previewPdf.pdfDataUrl) {
                 preview.pdfDataUrl = previewPdf.pdfDataUrl;
+                preview.pdfBase64 = previewPdf.pdfBase64 || "";
                 preview.pdfSource = previewPdf.pdfSource;
               }
               if (

@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618h";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618i";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1413,11 +1413,31 @@
     return prefix + encoded;
   }
 
+  function normalizePreviewPdfDataUrl(preview) {
+    if (!preview || typeof preview !== "object") {
+      return "";
+    }
+    const direct = normalizePdfDataUrl(preview.pdfDataUrl);
+    if (direct) {
+      return direct;
+    }
+    const base64 = String(preview.pdfBase64 || "").replace(/\s+/g, "").trim();
+    if (!base64) {
+      return "";
+    }
+    let normalized = base64.replace(/-/g, "+").replace(/_/g, "/").replace(/ /g, "+");
+    const padding = normalized.length % 4;
+    if (padding) {
+      normalized += "=".repeat(4 - padding);
+    }
+    return `data:application/pdf;base64,${normalized}`;
+  }
+
   function hasPreviewPdfDataUrl(preview) {
     if (!preview || typeof preview !== "object") {
       return false;
     }
-    return Boolean(normalizePdfDataUrl(preview.pdfDataUrl));
+    return Boolean(normalizePreviewPdfDataUrl(preview));
   }
 
   function collectPreviewCandidatesFromPayload(payload) {
@@ -1448,6 +1468,7 @@
       }
       if (
         typeof current.pdfDataUrl === "string" ||
+        typeof current.pdfBase64 === "string" ||
         Array.isArray(current.lineItems) ||
         Array.isArray(current.customFields) ||
         Array.isArray(current.allFields)
@@ -3880,9 +3901,7 @@
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
-        preview && typeof preview === "object"
-          ? normalizePdfDataUrl(preview.pdfDataUrl)
-          : "";
+        preview && typeof preview === "object" ? normalizePreviewPdfDataUrl(preview) : "";
       const generatedPdfBytes = generatedPdfDataUrl
         ? pdfDataUrlToBytes(generatedPdfDataUrl)
         : null;
@@ -3901,17 +3920,6 @@
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(generatedPdfDataUrl);
-        return;
-      }
-      let nativePdfBytes = null;
-      try {
-        nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
-      } catch (_error) {
-        nativePdfBytes = null;
-      }
-      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");

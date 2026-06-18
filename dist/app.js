@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618f";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618g";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1394,30 +1394,73 @@
     return null;
   }
 
-  function extractPreviewFromServerActionPayload(payload) {
-    let current = payload;
-    for (let i = 0; i < 8; i += 1) {
+  function hasPreviewPdfDataUrl(preview) {
+    if (!preview || typeof preview !== "object") {
+      return false;
+    }
+    const dataUrl = String(preview.pdfDataUrl || "").trim();
+    return dataUrl.startsWith("data:application/pdf;base64,");
+  }
+
+  function collectPreviewCandidatesFromPayload(payload) {
+    const queue = [payload];
+    const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+    const candidates = [];
+    while (queue.length) {
+      const current = queue.shift();
       if (!current || typeof current !== "object") {
-        return null;
+        continue;
+      }
+      if (visited) {
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
       }
       if (Array.isArray(current)) {
-        return null;
+        for (let i = 0; i < current.length; i += 1) {
+          if (current[i] && typeof current[i] === "object") {
+            queue.push(current[i]);
+          }
+        }
+        continue;
       }
       if (current.preview && typeof current.preview === "object") {
-        return current.preview;
+        queue.push(current.preview);
       }
-      if (typeof current.pdfDataUrl === "string" || Array.isArray(current.lineItems)) {
-        return current;
+      if (
+        typeof current.pdfDataUrl === "string" ||
+        Array.isArray(current.lineItems) ||
+        Array.isArray(current.customFields) ||
+        Array.isArray(current.allFields)
+      ) {
+        candidates.push(current);
       }
-      current =
-        current.data ||
-        current.response ||
-        current.result ||
-        current.payload ||
-        current.body ||
-        null;
+      const nested = [
+        current.data,
+        current.response,
+        current.result,
+        current.payload,
+        current.body,
+        current.item,
+        current.value,
+      ];
+      for (let i = 0; i < nested.length; i += 1) {
+        if (nested[i] && typeof nested[i] === "object") {
+          queue.push(nested[i]);
+        }
+      }
     }
-    return null;
+    return candidates;
+  }
+
+  function extractPreviewFromServerActionPayload(payload) {
+    const candidates = collectPreviewCandidatesFromPayload(payload);
+    if (!candidates.length) {
+      return null;
+    }
+    const withPdf = candidates.find((candidate) => hasPreviewPdfDataUrl(candidate));
+    return withPdf || candidates[0] || null;
   }
 
   async function fetchInvoicesFromSourceProjects() {
@@ -4292,11 +4335,12 @@
       },
     };
     const attempts = [
+      { previewInvoiceId, previewInvoiceNumber: "" },
       { previewInvoiceId, previewInvoiceNumber },
       { previewInvoiceId: "", previewInvoiceNumber },
-      { previewInvoiceId, previewInvoiceNumber: "" },
     ];
     let fallbackPreview = null;
+    const attemptDiagnostics = [];
     for (let i = 0; i < attempts.length; i += 1) {
       const attempt = attempts[i];
       if (!attempt.previewInvoiceId && !attempt.previewInvoiceNumber) {
@@ -4308,33 +4352,84 @@
           Object.assign({}, baseRequest, attempt)
         );
         const directPreview = extractPreviewFromServerActionPayload(payload);
+        const directHasPdf = hasPreviewPdfDataUrl(directPreview);
         if (directPreview) {
-          const directPdfDataUrl = String(directPreview.pdfDataUrl || "").trim();
-          if (directPdfDataUrl) {
+          if (directHasPdf) {
+            state.syncDiagnostics = mergeObjects(state.syncDiagnostics, {
+              previewInvokeAttempts: attemptDiagnostics,
+            });
             return directPreview;
           }
           if (!fallbackPreview) {
             fallbackPreview = directPreview;
           }
-          continue;
         }
         const result = unwrapServerActionResponse(payload);
         if (!result || result.ok === false) {
+          attemptDiagnostics.push({
+            attemptIndex: i,
+            previewInvoiceId: attempt.previewInvoiceId || "",
+            previewInvoiceNumber: attempt.previewInvoiceNumber || "",
+            directPreview: Boolean(directPreview),
+            directHasPdf,
+            resultOk: Boolean(result && result.ok),
+            resultError: result && result.error ? String(result.error) : "",
+          });
           continue;
         }
         if (result.preview) {
-          const resultPdfDataUrl = String(result.preview.pdfDataUrl || "").trim();
-          if (resultPdfDataUrl) {
+          const resultHasPdf = hasPreviewPdfDataUrl(result.preview);
+          if (resultHasPdf) {
+            attemptDiagnostics.push({
+              attemptIndex: i,
+              previewInvoiceId: attempt.previewInvoiceId || "",
+              previewInvoiceNumber: attempt.previewInvoiceNumber || "",
+              directPreview: Boolean(directPreview),
+              directHasPdf,
+              resultOk: true,
+              resultHasPdf,
+            });
+            state.syncDiagnostics = mergeObjects(state.syncDiagnostics, {
+              previewInvokeAttempts: attemptDiagnostics,
+            });
             return result.preview;
           }
           if (!fallbackPreview) {
             fallbackPreview = result.preview;
           }
+          attemptDiagnostics.push({
+            attemptIndex: i,
+            previewInvoiceId: attempt.previewInvoiceId || "",
+            previewInvoiceNumber: attempt.previewInvoiceNumber || "",
+            directPreview: Boolean(directPreview),
+            directHasPdf,
+            resultOk: true,
+            resultHasPdf: false,
+          });
+        } else {
+          attemptDiagnostics.push({
+            attemptIndex: i,
+            previewInvoiceId: attempt.previewInvoiceId || "",
+            previewInvoiceNumber: attempt.previewInvoiceNumber || "",
+            directPreview: Boolean(directPreview),
+            directHasPdf,
+            resultOk: true,
+            resultHasPdf: false,
+          });
         }
       } catch (_error) {
+        attemptDiagnostics.push({
+          attemptIndex: i,
+          previewInvoiceId: attempt.previewInvoiceId || "",
+          previewInvoiceNumber: attempt.previewInvoiceNumber || "",
+          error: simplifyError(_error),
+        });
         // Try the next preview lookup strategy.
       }
     }
+    state.syncDiagnostics = mergeObjects(state.syncDiagnostics, {
+      previewInvokeAttempts: attemptDiagnostics,
+    });
     return fallbackPreview;
   }
 

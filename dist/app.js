@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260618i";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260618j";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,

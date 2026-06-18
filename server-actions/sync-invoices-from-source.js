@@ -661,6 +661,96 @@ function looksLikePdfBytes(bytes) {
   );
 }
 
+function parseJsonSafe(value) {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function extractLikelyUrlFromObject(input) {
+  const queue = [input];
+  const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    if (typeof current === "string") {
+      const trimmed = current.trim();
+      if (/^https?:\/\/\S+/i.test(trimmed)) {
+        return trimmed;
+      }
+      continue;
+    }
+    if (typeof current !== "object") {
+      continue;
+    }
+    if (visited) {
+      if (visited.has(current)) {
+        continue;
+      }
+      visited.add(current);
+    }
+    if (Array.isArray(current)) {
+      for (let i = 0; i < current.length; i += 1) {
+        queue.push(current[i]);
+      }
+      continue;
+    }
+    const directUrl = pickFirst(
+      current.url ||
+        current.downloadUrl ||
+        current.pdfUrl ||
+        current.signedUrl ||
+        current.fileUrl ||
+        current.location
+    );
+    if (directUrl && /^https?:\/\/\S+/i.test(directUrl.trim())) {
+      return directUrl.trim();
+    }
+    const nestedValues = [
+      current.data,
+      current.response,
+      current.result,
+      current.payload,
+      current.body,
+    ];
+    const keys = Object.keys(current);
+    for (let i = 0; i < keys.length; i += 1) {
+      nestedValues.push(current[keys[i]]);
+    }
+    for (let i = 0; i < nestedValues.length; i += 1) {
+      if (nestedValues[i] !== undefined) {
+        queue.push(nestedValues[i]);
+      }
+    }
+  }
+  return "";
+}
+
+function extractLikelyPdfUrlFromBytes(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.byteLength) {
+    return "";
+  }
+  const text = Buffer.from(bytes).toString("utf8").trim();
+  if (!text) {
+    return "";
+  }
+  if (/^https?:\/\/\S+/i.test(text)) {
+    return text;
+  }
+  const parsed = parseJsonSafe(text);
+  if (parsed && typeof parsed === "object") {
+    const fromObject = extractLikelyUrlFromObject(parsed);
+    if (fromObject) {
+      return fromObject;
+    }
+  }
+  return "";
+}
+
 async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
@@ -699,6 +789,20 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
           pdfBase64,
           pdfSource: candidate.source,
         };
+      }
+      const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
+      if (redirectedPdfUrl) {
+        const redirectedBytes = await requestBinary(redirectedPdfUrl, {
+          Accept: "*/*",
+        });
+        if (looksLikePdfBytes(redirectedBytes)) {
+          const redirectedBase64 = Buffer.from(redirectedBytes).toString("base64");
+          return {
+            pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+            pdfBase64: redirectedBase64,
+            pdfSource: `${candidate.source}-redirect-url`,
+          };
+        }
       }
     } catch (_error) {
       // Ignore and continue with next candidate endpoint.

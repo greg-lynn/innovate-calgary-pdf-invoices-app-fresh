@@ -823,13 +823,11 @@ async function resolveInvoiceIdForPreview(
   previewSourceProjectId
 ) {
   const explicitId = pickFirst(previewInvoiceId);
-  if (/^\d+$/.test(explicitId)) {
-    return explicitId;
-  }
-
   const targetNumber = canonicalInvoiceNumber(
     previewInvoiceNumber || previewInvoiceId || ""
   );
+  // Do not short-circuit on numeric explicit IDs when invoice number is provided.
+  // Some list payloads can expose numeric IDs that are not invoice IDs for preview APIs.
   if (!targetNumber) {
     return explicitId;
   }
@@ -842,10 +840,24 @@ async function resolveInvoiceIdForPreview(
   if (!lookupUrl) {
     return explicitId;
   }
-  const lookupPayload = await requestJson(lookupUrl, headers);
-  const rows = Array.isArray(lookupPayload)
-    ? lookupPayload
-    : extractCollection(lookupPayload, ["data", "invoices", "items", "results"]);
+  let rows = [];
+  try {
+    const lookupPayload = await requestJson(lookupUrl, headers);
+    rows = Array.isArray(lookupPayload)
+      ? lookupPayload
+      : extractCollection(lookupPayload, ["data", "invoices", "items", "results"]);
+  } catch (_error) {
+    rows = [];
+  }
+  if (!rows.length) {
+    const fallbackLookup = await requestCollection(
+      baseUrl,
+      headers,
+      ["/api/v1/invoices", "/api/1.0/invoices"],
+      ["data", "invoices", "items", "results"]
+    );
+    rows = fallbackLookup.rows || [];
+  }
   if (!rows.length) {
     return explicitId;
   }

@@ -3785,12 +3785,6 @@
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
-      const nativePdfBytes = await fetchNativeInvoicePdfBytes(invoice);
-      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        return;
-      }
       const preview =
         (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
       const generatedPdfDataUrl =
@@ -4229,13 +4223,11 @@
     }
     const workspaceCandidates = getWorkspaceCandidates();
     const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
-    const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+    const baseRequest = {
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
       workspaceBaseUrl,
       workspaceCandidates,
-      previewInvoiceId,
-      previewInvoiceNumber,
       previewSourceProjectId: pickFirst(invoice.sourceProjectId || ""),
       viewerContext: {
         userId: state.context.userId || "",
@@ -4248,12 +4240,30 @@
           "",
         workspaceBaseUrl,
       },
-    });
-    const result = unwrapServerActionResponse(payload);
-    if (!result || result.ok === false) {
-      return null;
+    };
+    const attempts = [
+      { previewInvoiceId, previewInvoiceNumber },
+      { previewInvoiceId: "", previewInvoiceNumber },
+      { previewInvoiceId, previewInvoiceNumber: "" },
+    ];
+    for (let i = 0; i < attempts.length; i += 1) {
+      const attempt = attempts[i];
+      if (!attempt.previewInvoiceId && !attempt.previewInvoiceNumber) {
+        continue;
+      }
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        Object.assign({}, baseRequest, attempt)
+      );
+      const result = unwrapServerActionResponse(payload);
+      if (!result || result.ok === false) {
+        continue;
+      }
+      if (result.preview) {
+        return result.preview;
+      }
     }
-    return result.preview || null;
+    return null;
   }
 
   function renderInvoicePreviewContent(invoice, preview, isLoading, errorText) {

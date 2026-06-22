@@ -620,12 +620,12 @@ input:focus {
   position: absolute;
   z-index: 50;
   pointer-events: none;
-  top: clamp(44px, 6vh, 78px);
-  right: clamp(28px, 4vw, 56px);
-  width: clamp(118px, 16vw, 188px);
-  height: clamp(240px, 38vh, 360px);
+  top: clamp(120px, 15.5vh, 164px);
+  right: clamp(54px, 6.8vw, 96px);
+  width: clamp(72px, 8.8vw, 98px);
+  height: clamp(72px, 8.8vw, 98px);
   background: #ffffff;
-  border-radius: 10px;
+  border-radius: 999px;
 }
 
 #modalPdfFrame.hidden + .modal-preview-logo-mask {

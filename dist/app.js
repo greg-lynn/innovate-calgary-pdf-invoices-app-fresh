@@ -4707,7 +4707,6 @@
         "Hours",
       ],
       ];
-      const summaryRows = [];
       let pdfFileCount = 0;
       let missingPdfCount = 0;
 
@@ -4769,7 +4768,6 @@
         if (preview) {
           exportRecord.preview = preview;
         }
-        const invoicedHours = extractInvoicedHours(preview);
         let pdfBytesToWrite = null;
         let pdfSource = "";
         if (looksLikePdfBytes(nativePdfBytes)) {
@@ -4810,19 +4808,6 @@
         exportRecord.pdfSource = pdfSource || "none";
         exportRecord.nativePdfSource =
           pdfSource === "native-download" ? resolveNativeInvoiceDownloadUrl(invoice) : "";
-        summaryRows.push({
-        createdBy: pickFirst((preview && preview.billToName) || invoice.ownerName || ""),
-        status: formatStatus(invoice.invoiceStatus),
-        invoiceNumber: invoice.invoiceNumber,
-        amount: formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
-        account: invoice.accountName || "",
-        projectName:
-          pickFirst((preview && preview.projectName) || invoice.sourceProjectName || "") || "",
-        issueDate: formatDate(invoice.issueDate || invoice.invoiceDate),
-        invoicedHours: formatHours(invoicedHours),
-        pdfIncluded: Boolean(pdfBytesToWrite),
-        pdfSource: pdfSource || "none",
-        });
         zip.file(
           "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
           JSON.stringify(exportRecord, null, 2)
@@ -4916,95 +4901,12 @@
       .join("\n");
   }
 
-  function extractInvoicedHours(preview) {
-    const lineItems = preview && Array.isArray(preview.lineItems) ? preview.lineItems : [];
-    return lineItems.reduce((sum, line) => {
-      const qty = Number(line && line.quantity);
-      return Number.isFinite(qty) ? sum + qty : sum;
-    }, 0);
-  }
-
   function formatHours(value) {
     const numeric = Number(value || 0);
     if (!Number.isFinite(numeric)) {
       return "0.00";
     }
     return numeric.toFixed(2);
-  }
-
-  function buildInvoiceSummaryWorkbookHtml(rows, generatedAt) {
-    const records = Array.isArray(rows) ? rows : [];
-    const columns = [
-      ["Created By", "createdBy"],
-      ["Status", "status"],
-      ["Invoice Number", "invoiceNumber"],
-      ["Amount", "amount"],
-      ["Account", "account"],
-      ["Project Name", "projectName"],
-      ["Issue Date", "issueDate"],
-      ["Invoiced Hours", "invoicedHours"],
-    ];
-    const headerHtml = columns.map((column) => "<th>" + escapeHtml(column[0]) + "</th>").join("");
-    const bodyHtml = records
-      .map((record) => {
-        const cells = columns
-          .map((column) => {
-            const key = column[1];
-            return "<td>" + escapeHtml(record && record[key] != null ? record[key] : "") + "</td>";
-          })
-          .join("");
-        return "<tr>" + cells + "</tr>";
-      })
-      .join("");
-    return (
-      '<html xmlns:o="urn:schemas-microsoft-com:office:office" ' +
-      'xmlns:x="urn:schemas-microsoft-com:office:excel" ' +
-      'xmlns="http://www.w3.org/TR/REC-html40"><head>' +
-      '<meta charset="utf-8" />' +
-      "<style>table{border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;}th,td{border:1px solid #999;padding:6px 8px;}th{background:#f0f0f0;font-weight:700;}</style>" +
-      "</head><body>" +
-      "<h3>Invoice export summary</h3>" +
-      '<p>Generated: ' +
-      escapeHtml(generatedAt || "") +
-      "</p>" +
-      "<table><thead><tr>" +
-      headerHtml +
-      "</tr></thead><tbody>" +
-      bodyHtml +
-      "</tbody></table></body></html>"
-    );
-  }
-
-  function buildInvoiceSummaryText(summary) {
-    const data = summary || {};
-    const lines = [
-      "Invoice Export Summary",
-      "Generated: " + String(data.generatedAt || ""),
-      "Export mode: " + String(data.exportMode || ""),
-      "Total invoices: " + String(data.invoiceCount || 0),
-      "PDF files included: " + String(data.pdfFileCount || 0),
-      "Missing PDF files: " + String(data.missingPdfCount || 0),
-      "",
-      "Invoices:",
-    ];
-    const rows = Array.isArray(data.invoices) ? data.invoices : [];
-    rows.forEach((row, index) => {
-      lines.push(
-        [
-          String(index + 1) + ".",
-          String(row.invoiceNumber || "Unknown"),
-          "|",
-          String(row.status || "Unknown"),
-          "|",
-          String(row.amount || ""),
-          "| PDF:",
-          row.pdfIncluded ? "yes" : "no",
-          "| Source:",
-          String(row.pdfSource || "none"),
-        ].join(" ")
-      );
-    });
-    return lines.join("\n");
   }
 
   function toggleInvoiceDownloadSelection(invoiceId, checked, rerender = true) {

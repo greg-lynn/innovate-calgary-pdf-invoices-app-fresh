@@ -32,6 +32,11 @@ fi
 
 (
   cd "${STAGING_DIR}"
+  if [[ -f package-lock.json ]]; then
+    npm ci --omit=dev >/dev/null
+  else
+    npm install --omit=dev >/dev/null
+  fi
   npx -y @rocketlane/rli@latest build >/dev/null
 
   # Some installer paths expect deploy.json at zip root.

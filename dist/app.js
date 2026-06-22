@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260622g";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260622h";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3547,7 +3547,6 @@
     refs.pdfModal.classList.remove("hidden");
     refs.pdfModal.setAttribute("aria-hidden", "false");
     refs.modalInvoicePreview.classList.add("hidden");
-    refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
     setModalPdfFrameSrc("");
@@ -3560,7 +3559,6 @@
     setModalPdfFrameSrc("");
     refs.modalPdfFrame.classList.remove("hidden");
     refs.modalInvoicePreview.classList.add("hidden");
-    refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
     refs.modalInvoicePreview.innerHTML = "";
   }
 
@@ -3597,88 +3595,6 @@
     state.modalPdfBlobUrl = blobUrl;
     refs.modalPdfFrame.setAttribute("src", blobUrl);
     return true;
-  }
-
-  function paintInvoiceLogoMaskOnCanvas(context, viewport) {
-    if (!context || !viewport) {
-      return;
-    }
-    const pageWidth = Number(viewport.width || 0);
-    const pageHeight = Number(viewport.height || 0);
-    if (!pageWidth || !pageHeight) {
-      return;
-    }
-    const x = Math.round(pageWidth * 0.86);
-    const y = Math.round(pageHeight * 0.09);
-    const width = Math.round(pageWidth * 0.12);
-    const height = Math.round(pageHeight * 0.14);
-    context.save();
-    context.fillStyle = "#ffffff";
-    context.fillRect(x, y, width, height);
-    context.restore();
-  }
-
-  async function renderMaskedPdfPreview(pdfSource) {
-    const src = String(pdfSource || "").trim();
-    if (!src) {
-      return false;
-    }
-    try {
-      ensurePdfJsAvailable();
-      const buffer = await fetchPdfArrayBuffer(src);
-      if (!buffer || !buffer.byteLength) {
-        return false;
-      }
-      const loadingTask = window.pdfjsLib.getDocument({
-        data: buffer,
-        disableWorker: true,
-      });
-      let pdfDocument = null;
-      try {
-        pdfDocument = await loadingTask.promise;
-        const targetWidth = Math.min(Math.max(window.innerWidth - 380, 640), 900);
-        refs.modalPdfFrame.classList.add("hidden");
-        refs.modalInvoicePreview.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("modal-pdf-canvas-viewer");
-        refs.modalInvoicePreview.innerHTML = "";
-        const totalPages = Number(pdfDocument.numPages || 0);
-        for (let pageNumber = 1; pageNumber <= totalPages; pageNumber += 1) {
-          const page = await pdfDocument.getPage(pageNumber);
-          const baseViewport = page.getViewport({ scale: 1 });
-          const scale = targetWidth / Math.max(Number(baseViewport.width || 1), 1);
-          const viewport = page.getViewport({ scale: Math.max(scale, 1) });
-          const pageContainer = document.createElement("div");
-          pageContainer.className = "modal-pdf-page";
-          const canvas = document.createElement("canvas");
-          canvas.className = "modal-pdf-page-canvas";
-          canvas.width = Math.max(1, Math.round(viewport.width));
-          canvas.height = Math.max(1, Math.round(viewport.height));
-          pageContainer.appendChild(canvas);
-          refs.modalInvoicePreview.appendChild(pageContainer);
-          const context = canvas.getContext("2d", { alpha: false });
-          if (!context) {
-            continue;
-          }
-          await page.render({
-            canvasContext: context,
-            viewport,
-          }).promise;
-          if (pageNumber === 1) {
-            paintInvoiceLogoMaskOnCanvas(context, viewport);
-          }
-        }
-        return totalPages > 0;
-      } finally {
-        if (pdfDocument && typeof pdfDocument.cleanup === "function") {
-          pdfDocument.cleanup();
-        }
-        if (loadingTask && typeof loadingTask.destroy === "function") {
-          loadingTask.destroy();
-        }
-      }
-    } catch (_error) {
-      return false;
-    }
   }
 
   function renderSearchInsight() {
@@ -3980,13 +3896,8 @@
     try {
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
-        const rendered = await renderMaskedPdfPreview(cached.pdfDataUrl);
-        if (rendered) {
-          return;
-        }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
@@ -4002,13 +3913,8 @@
             isNativePdf: true,
           };
         }
-        const rendered = await renderMaskedPdfPreview(preloadedPdfDataUrl);
-        if (rendered) {
-          return;
-        }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
         setModalPdfFrameSrc(preloadedPdfDataUrl);
         return;
       }
@@ -4031,19 +3937,13 @@
             isNativePdf: true,
           };
         }
-        const rendered = await renderMaskedPdfPreview(generatedPdfDataUrl);
-        if (rendered) {
-          return;
-        }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
         setModalPdfFrameSrc(generatedPdfDataUrl);
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
-      refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
       renderInvoicePreviewContent(
         invoice,
         preview,
@@ -4053,7 +3953,6 @@
     } catch (_error) {
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
-      refs.modalInvoicePreview.classList.remove("modal-pdf-canvas-viewer");
       renderInvoicePreviewContent(
         invoice,
         null,

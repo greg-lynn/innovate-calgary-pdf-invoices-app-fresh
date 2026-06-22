@@ -1,5 +1,7 @@
 "use strict";
 
+const { PDFDocument, rgb } = require("pdf-lib");
+
 const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 // Production override: embed API key here so app works without installer prompt.
 // Replace before shipping to users if needed.
@@ -867,6 +869,50 @@ function extractLikelyPdfUrlFromBytes(bytes) {
   return "";
 }
 
+async function removeLogoFromPdfBytes(pdfBytes) {
+  if (!(pdfBytes instanceof Uint8Array) || !looksLikePdfBytes(pdfBytes)) {
+    return pdfBytes;
+  }
+  try {
+    const pdfDocument = await PDFDocument.load(pdfBytes, {
+      ignoreEncryption: true,
+      updateMetadata: false,
+    });
+    const pages = pdfDocument.getPages();
+    if (!pages.length) {
+      return pdfBytes;
+    }
+    const firstPage = pages[0];
+    const pageSize = firstPage.getSize();
+    const pageWidth = Number(pageSize.width || 0);
+    const pageHeight = Number(pageSize.height || 0);
+    if (!pageWidth || !pageHeight) {
+      return pdfBytes;
+    }
+    const maskWidth = Math.max(70, pageWidth * 0.18);
+    const maskHeight = Math.max(70, pageHeight * 0.16);
+    const x = Math.max(0, pageWidth - maskWidth - pageWidth * 0.06);
+    const y = Math.max(0, pageHeight - maskHeight - pageHeight * 0.08);
+    firstPage.drawRectangle({
+      x,
+      y,
+      width: maskWidth,
+      height: maskHeight,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+      opacity: 1,
+    });
+    const savedBytes = await pdfDocument.save({
+      useObjectStreams: false,
+      updateFieldAppearances: false,
+    });
+    const normalized = savedBytes instanceof Uint8Array ? savedBytes : new Uint8Array(savedBytes);
+    return looksLikePdfBytes(normalized) ? normalized : pdfBytes;
+  } catch (_error) {
+    return pdfBytes;
+  }
+}
+
 async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
@@ -899,11 +945,12 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
         requestHeaders
       );
       if (looksLikePdfBytes(pdfBytes)) {
-        const pdfBase64 = Buffer.from(pdfBytes).toString("base64");
+        const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
+        const pdfBase64 = Buffer.from(logoMaskedPdfBytes).toString("base64");
         return {
           pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
           pdfBase64,
-          pdfSource: candidate.source,
+          pdfSource: `${candidate.source}-logo-masked`,
         };
       }
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
@@ -912,11 +959,12 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
           Accept: "*/*",
         });
         if (looksLikePdfBytes(redirectedBytes)) {
-          const redirectedBase64 = Buffer.from(redirectedBytes).toString("base64");
+          const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+          const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
           return {
             pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
             pdfBase64: redirectedBase64,
-            pdfSource: `${candidate.source}-redirect-url`,
+            pdfSource: `${candidate.source}-redirect-url-logo-masked`,
           };
         }
       }

@@ -617,15 +617,7 @@ input:focus {
 }
 
 .modal-preview-logo-mask {
-  position: absolute;
-  z-index: 50;
-  pointer-events: none;
-  top: clamp(120px, 15.5vh, 164px);
-  right: clamp(54px, 6.8vw, 96px);
-  width: clamp(72px, 8.8vw, 98px);
-  height: clamp(72px, 8.8vw, 98px);
-  background: #ffffff;
-  border-radius: 999px;
+  display: none;
 }
 
 #modalPdfFrame.hidden + .modal-preview-logo-mask {
@@ -637,28 +629,6 @@ input:focus {
   overflow: auto;
   max-height: 76vh;
   color: #24325b;
-}
-
-.modal-invoice-preview.modal-pdf-canvas-viewer {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.9rem;
-  background: #f6f9ff;
-  padding: 1rem 0.8rem 1.2rem;
-}
-
-.modal-pdf-page {
-  width: min(900px, 100%);
-  background: #ffffff;
-  border: 1px solid #d8e2fa;
-  box-shadow: 0 8px 18px rgba(18, 34, 80, 0.16);
-}
-
-.modal-pdf-page-canvas {
-  display: block;
-  width: 100%;
-  height: auto;
 }
 
 .modal-preview-summary {

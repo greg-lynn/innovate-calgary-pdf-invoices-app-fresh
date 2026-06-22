@@ -620,10 +620,10 @@ input:focus {
   position: absolute;
   z-index: 50;
   pointer-events: none;
-  top: clamp(112px, 16vh, 182px);
-  right: clamp(42px, 8vw, 128px);
-  width: clamp(132px, 19vw, 236px);
-  height: clamp(92px, 13vh, 154px);
+  top: clamp(44px, 6vh, 78px);
+  right: clamp(28px, 4vw, 56px);
+  width: clamp(118px, 16vw, 188px);
+  height: clamp(240px, 38vh, 360px);
   background: #ffffff;
   border-radius: 10px;
 }

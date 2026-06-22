@@ -639,6 +639,28 @@ input:focus {
   color: #24325b;
 }
 
+.modal-invoice-preview.modal-pdf-canvas-viewer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.9rem;
+  background: #f6f9ff;
+  padding: 1rem 0.8rem 1.2rem;
+}
+
+.modal-pdf-page {
+  width: min(900px, 100%);
+  background: #ffffff;
+  border: 1px solid #d8e2fa;
+  box-shadow: 0 8px 18px rgba(18, 34, 80, 0.16);
+}
+
+.modal-pdf-page-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
 .modal-preview-summary {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

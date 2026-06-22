@@ -595,6 +595,8 @@ input:focus {
   box-shadow: 0 24px 40px rgba(18, 34, 80, 0.26);
   display: flex;
   flex-direction: column;
+  position: relative;
+  overflow: hidden;
 }
 
 .modal-header {
@@ -612,6 +614,22 @@ input:focus {
   border: 0;
   background: #f6f9ff;
   border-radius: 0 0 14px 14px;
+}
+
+.modal-preview-logo-mask {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  top: clamp(108px, 14vh, 150px);
+  right: clamp(18px, 2.5vw, 34px);
+  width: clamp(56px, 6.5vw, 80px);
+  height: clamp(40px, 5vh, 58px);
+  background: #ffffff;
+  border-radius: 4px;
+}
+
+#modalPdfFrame.hidden + .modal-preview-logo-mask {
+  display: none;
 }
 
 .modal-invoice-preview {

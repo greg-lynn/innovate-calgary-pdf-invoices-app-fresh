@@ -15,6 +15,13 @@ const FIELD_ALIAS_GROUPS = {
   quantityHours: ["quantity", "qty", "hour", "hours"],
 };
 
+const HUB_FALLBACK_LABEL_ALIASES = ["ea address", "address", "hub location", "location"];
+const PROGRAM_FALLBACK_LABEL_ALIASES = [
+  "program",
+  "ea program",
+  "expert advisor program",
+];
+
 function normalizeProjectName(value) {
   return String(value || "")
     .toLowerCase()
@@ -361,6 +368,51 @@ function compactJoined(values) {
   return dedupeStrings((Array.isArray(values) ? values : []).map((value) => pickFirst(value))).join(
     ", "
   );
+}
+
+function extractFieldValuesByLabelAliases(record, aliases) {
+  if (!record || typeof record !== "object" || !Array.isArray(aliases) || !aliases.length) {
+    return [];
+  }
+  const values = [];
+  collectCustomFieldSources(record).forEach((source) => {
+    extractFieldDisplayEntries(source).forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      if (!fieldLabelMatchesAlias(entry.label, aliases)) {
+        return;
+      }
+      const value = toFieldText(entry.value);
+      if (value) {
+        values.push(value);
+      }
+    });
+  });
+  return dedupeStrings(values);
+}
+
+function deriveHubFromAddressText(text) {
+  const raw = pickFirst(text);
+  if (!raw) {
+    return "";
+  }
+  const parts = raw
+    .split(",")
+    .map((part) => pickFirst(part))
+    .filter(Boolean);
+  if (parts.length < 2) {
+    return "";
+  }
+  const cityCandidate = pickFirst(parts[1]);
+  if (
+    cityCandidate &&
+    /^[A-Za-z][A-Za-z .'-]+$/.test(cityCandidate) &&
+    !/^[A-Z]{2,3}$/.test(cityCandidate)
+  ) {
+    return cityCandidate;
+  }
+  return "";
 }
 
 function collectCustomFieldSources(record) {
@@ -1434,13 +1486,27 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     0
   );
   const quantityHours = quantityHoursFromFields || lineItemQuantity;
+  const hubFallbackValues = extractFieldValuesByLabelAliases(record, HUB_FALLBACK_LABEL_ALIASES);
+  const programFallbackValues = extractFieldValuesByLabelAliases(
+    record,
+    PROGRAM_FALLBACK_LABEL_ALIASES
+  );
+  const derivedHubFromAddress = hubFallbackValues
+    .map((value) => deriveHubFromAddressText(value))
+    .find(Boolean);
   const contractName = compactJoined(
     customFieldValues.contractName.concat([projectInfo.contractName])
   );
-  const hub = compactJoined(customFieldValues.hub.concat([projectInfo.hub]));
-  const program = compactJoined(
-    customFieldValues.program.concat([projectInfo.program])
+  const hub = compactJoined(
+    customFieldValues.hub.concat([derivedHubFromAddress], [projectInfo.hub])
   );
+  const projectNameProgramHint = /expert advisor/i.test(pickFirst(projectInfo.name))
+    ? "Expert Advisor Program"
+    : "";
+  const program =
+    compactJoined(
+      customFieldValues.program.concat(programFallbackValues, [projectInfo.program], [projectNameProgramHint])
+    ) || "Expert Advisor Program";
   const submittedByName = pickFirst(
     record.submittedByName ||
       fullName(record.submittedBy) ||

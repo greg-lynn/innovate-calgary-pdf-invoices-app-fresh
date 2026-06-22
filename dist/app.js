@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260622b";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260622c";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3449,10 +3449,10 @@
       contractCell.textContent = invoice.contractName || "—";
 
       const hubCell = document.createElement("td");
-      hubCell.textContent = invoice.hub || "—";
+      hubCell.textContent = invoice.hub || "";
 
       const programCell = document.createElement("td");
-      programCell.textContent = invoice.program || "—";
+      programCell.textContent = invoice.program || "";
 
       const issueDateCell = document.createElement("td");
       issueDateCell.textContent = formatDate(invoice.issueDate || invoice.invoiceDate);
@@ -4789,7 +4789,7 @@
         }
         if (pdfBytesToWrite) {
           zip.file(
-            "pdf/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
             pdfBytesToWrite
           );
           pdfFileCount += 1;
@@ -4830,22 +4830,6 @@
       }
 
       zip.file("invoices.csv", toCsv(csvRows));
-      const summaryPayload = {
-        generatedAt: new Date().toISOString(),
-        exportMode: state.exportMode,
-        invoiceCount: invoicesToExport.length,
-        pdfFileCount,
-        missingPdfCount,
-        invoices: summaryRows,
-      };
-      zip.file("summary/invoice-summary.json", JSON.stringify(summaryPayload, null, 2));
-      zip.file("summary/invoice-summary.txt", buildInvoiceSummaryText(summaryPayload));
-      if (state.exportMode === "all") {
-        zip.file(
-          "summary/invoice-summary.xls",
-          buildInvoiceSummaryWorkbookHtml(summaryRows, summaryPayload.generatedAt)
-        );
-      }
       const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
       const blob = await zip.generateAsync({ type: "blob" });
       const fileName =

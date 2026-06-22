@@ -499,6 +499,70 @@ function sumLineItemQuantity(lineItems) {
   }, 0);
 }
 
+function cleanExtractedFieldValue(value) {
+  return pickFirst(value)
+    .replace(/\s+/g, " ")
+    .replace(/^[|,:;\-]+/g, "")
+    .replace(/[|,:;\-]+$/g, "")
+    .trim();
+}
+
+function extractHubProgramFromLineItems(lineItems) {
+  const hubValues = [];
+  const programValues = [];
+  (Array.isArray(lineItems) ? lineItems : []).forEach((line) => {
+    if (!line || typeof line !== "object") {
+      return;
+    }
+    const description = pickFirst(
+      line.description ||
+        line.itemDescription ||
+        line.itemName ||
+        line.notes ||
+        line.text ||
+        line.name
+    );
+    if (description) {
+      const hubPattern = /(?:^|\||\n|\r)\s*hub\s*:\s*([^|\n\r]+)/gi;
+      const programPattern = /(?:^|\||\n|\r)\s*program\s*:\s*([^|\n\r]+)/gi;
+      let match = null;
+      while ((match = hubPattern.exec(description)) != null) {
+        const parsed = cleanExtractedFieldValue(match[1]);
+        if (parsed) {
+          hubValues.push(parsed);
+        }
+      }
+      while ((match = programPattern.exec(description)) != null) {
+        const parsed = cleanExtractedFieldValue(match[1]);
+        if (parsed) {
+          programValues.push(parsed);
+        }
+      }
+    }
+    const lineFieldValues = extractNamedCustomFieldValues(line.fields);
+    if (Array.isArray(lineFieldValues.hub)) {
+      lineFieldValues.hub.forEach((value) => {
+        const parsed = cleanExtractedFieldValue(value);
+        if (parsed) {
+          hubValues.push(parsed);
+        }
+      });
+    }
+    if (Array.isArray(lineFieldValues.program)) {
+      lineFieldValues.program.forEach((value) => {
+        const parsed = cleanExtractedFieldValue(value);
+        if (parsed) {
+          programValues.push(parsed);
+        }
+      });
+    }
+  });
+  return {
+    hub: dedupeStrings(hubValues),
+    program: dedupeStrings(programValues),
+  };
+}
+
 function invoiceMatchesQuery(invoice, query) {
   const normalizedQuery = String(query || "").trim().toLowerCase();
   if (!normalizedQuery) {
@@ -1500,13 +1564,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   const hub = compactJoined(
     customFieldValues.hub.concat([derivedHubFromAddress], [projectInfo.hub])
   );
-  const projectNameProgramHint = /expert advisor/i.test(pickFirst(projectInfo.name))
-    ? "Expert Advisor Program"
-    : "";
-  const program =
-    compactJoined(
-      customFieldValues.program.concat(programFallbackValues, [projectInfo.program], [projectNameProgramHint])
-    ) || "Expert Advisor Program";
+  const program = compactJoined(
+    customFieldValues.program.concat(programFallbackValues, [projectInfo.program])
+  );
   const submittedByName = pickFirst(
     record.submittedByName ||
       fullName(record.submittedBy) ||
@@ -2594,7 +2654,7 @@ module.exports = {
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
-      const quantityBackfillTasks = [];
+      const lineEnrichmentTasks = [];
       for (let idx = 0; idx < globalInvoices.length; idx += 1) {
         const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
@@ -2607,36 +2667,44 @@ module.exports = {
           const invoiceId = encodeURIComponent(
             pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
           );
-          if (Number(normalized.quantityHours || 0) <= 0) {
-            if (invoiceId) {
-              const targetInvoice = normalized;
-              quantityBackfillTasks.push(
-                requestCollection(
-                  baseUrl,
-                  headers,
-                  [`/api/1.0/invoices/${invoiceId}/lines`],
-                  ["data", "lines", "items", "results"]
-                )
-                  .then((lineFetch) => {
-                    diagnostics.invoiceErrors.push(...lineFetch.errors);
-                    const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
-                    if (fetchedQuantity > 0) {
-                      targetInvoice.quantityHours = fetchedQuantity;
-                    }
-                  })
-                  .catch((lineError) => {
-                    diagnostics.invoiceErrors.push(
-                      String(lineError && lineError.message ? lineError.message : lineError)
-                    );
-                  })
-              );
-            }
+          if (invoiceId) {
+            const targetInvoice = normalized;
+            lineEnrichmentTasks.push(
+              requestCollection(
+                baseUrl,
+                headers,
+                [`/api/1.0/invoices/${invoiceId}/lines`],
+                ["data", "lines", "items", "results"]
+              )
+                .then((lineFetch) => {
+                  diagnostics.invoiceErrors.push(...lineFetch.errors);
+                  const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
+                  if (fetchedQuantity > 0) {
+                    targetInvoice.quantityHours = fetchedQuantity;
+                  }
+                  const extractedLineValues = extractHubProgramFromLineItems(lineFetch.rows);
+                  if (Array.isArray(extractedLineValues.hub) && extractedLineValues.hub.length) {
+                    targetInvoice.hub = compactJoined(extractedLineValues.hub);
+                  }
+                  if (
+                    Array.isArray(extractedLineValues.program) &&
+                    extractedLineValues.program.length
+                  ) {
+                    targetInvoice.program = compactJoined(extractedLineValues.program);
+                  }
+                })
+                .catch((lineError) => {
+                  diagnostics.invoiceErrors.push(
+                    String(lineError && lineError.message ? lineError.message : lineError)
+                  );
+                })
+            );
           }
           collectedInvoices.push(normalized);
         }
       }
-      if (quantityBackfillTasks.length) {
-        await Promise.all(quantityBackfillTasks);
+      if (lineEnrichmentTasks.length) {
+        await Promise.all(lineEnrichmentTasks);
       }
 
       const membersResult = await requestCollection(

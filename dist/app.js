@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260622c";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260622d";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4713,26 +4713,10 @@
       for (let i = 0; i < invoicesToExport.length; i += 1) {
         const invoice = invoicesToExport[i];
         let preview = null;
-        let nativePdfBytes = null;
-        const preloadedPdfDataUrl = normalizePreviewPdfDataUrl({
-          pdfDataUrl: invoice.previewPdfDataUrl || "",
-          pdfBase64: invoice.previewPdfBase64 || "",
-        });
-        if (preloadedPdfDataUrl) {
-          nativePdfBytes = pdfDataUrlToBytes(preloadedPdfDataUrl);
-          preview = {
-            pdfDataUrl: preloadedPdfDataUrl,
-            pdfBase64: pickFirst(invoice.previewPdfBase64 || ""),
-            pdfSource: pickFirst(invoice.previewPdfSource || "prefetched"),
-          };
-        } else {
-          try {
-            preview = await fetchInvoicePreviewFromServerAction(invoice);
-          } catch (_error) {
-            preview = null;
-          }
-          nativePdfBytes =
-            preview && preview.pdfDataUrl ? pdfDataUrlToBytes(preview.pdfDataUrl) : null;
+        try {
+          preview = await fetchInvoicePreviewFromServerAction(invoice);
+        } catch (_error) {
+          preview = null;
         }
         csvRows.push([
         formatStatus(invoice.invoiceStatus),
@@ -4748,21 +4732,10 @@
         formatHours(invoice.quantityHours),
         ]);
         let pdfBytesToWrite = null;
-        let pdfSource = "";
-        if (looksLikePdfBytes(nativePdfBytes)) {
-          pdfBytesToWrite = nativePdfBytes;
-          pdfSource =
-            preview && preview.pdfDataUrl
-              ? "server-generate"
-              : "native-download";
-        }
-        if (!pdfBytesToWrite) {
-          const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-          const generatedPdfBytes = pdfDataUrlToBytes(pdfDataUrl);
-          if (looksLikePdfBytes(generatedPdfBytes)) {
-            pdfBytesToWrite = generatedPdfBytes;
-            pdfSource = "generated-fallback";
-          }
+        const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+        const generatedPdfBytes = pdfDataUrlToBytes(pdfDataUrl);
+        if (looksLikePdfBytes(generatedPdfBytes)) {
+          pdfBytesToWrite = generatedPdfBytes;
         }
         if (pdfBytesToWrite) {
           zip.file(

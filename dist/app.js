@@ -4747,27 +4747,6 @@
         formatDate(invoice.dueDate),
         formatHours(invoice.quantityHours),
         ]);
-        const exportRecord = {
-        invoiceStatus: formatStatus(invoice.invoiceStatus),
-        invoiceNumber: invoice.invoiceNumber,
-        expertAdvisor: invoice.ownerName || "",
-        amount: invoice.amount || 0,
-        currencyCode: invoice.currencyCode || "",
-        currencySymbol: invoice.currencySymbol || "",
-        client: invoice.accountName,
-        contractName: invoice.contractName || "",
-        hub: invoice.hub || "",
-        program: invoice.program || "",
-        issueDate: invoice.issueDate || invoice.invoiceDate,
-        dueDate: invoice.dueDate || "",
-        hours: Number(invoice.quantityHours || 0),
-        sourceProjectName: invoice.sourceProjectName || "",
-        associatedEmails: invoice.associatedEmails || [],
-        associatedUserIds: invoice.associatedUserIds || [],
-        };
-        if (preview) {
-          exportRecord.preview = preview;
-        }
         let pdfBytesToWrite = null;
         let pdfSource = "";
         if (looksLikePdfBytes(nativePdfBytes)) {
@@ -4798,20 +4777,6 @@
             "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
           );
         }
-        if (pdfBytesToWrite || preview) {
-          exportRecord.previewSource =
-            pdfSource === "native-download" || pdfSource === "server-generate"
-              ? "native-download"
-              : "generated-from-preview";
-        }
-        exportRecord.pdfIncluded = Boolean(pdfBytesToWrite);
-        exportRecord.pdfSource = pdfSource || "none";
-        exportRecord.nativePdfSource =
-          pdfSource === "native-download" ? resolveNativeInvoiceDownloadUrl(invoice) : "";
-        zip.file(
-          "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".json",
-          JSON.stringify(exportRecord, null, 2)
-        );
       }
 
       zip.file("invoices.csv", toCsv(csvRows));

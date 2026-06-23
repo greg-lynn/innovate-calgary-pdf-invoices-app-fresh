@@ -12,7 +12,7 @@ const FIELD_ALIAS_GROUPS = {
   contractName: ["contract name", "contract", "contractname"],
   hub: ["hub"],
   program: ["program"],
-  accountName: ["account", "client", "customer", "company"],
+  accountName: ["account"],
   createdBy: ["created by", "createdby", "creator"],
   quantityHours: ["quantity", "qty", "hour", "hours"],
 };
@@ -1672,13 +1672,11 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ) || projectInfo.ownerName || "Unassigned",
     accountName:
       pickPreferredAccountName([
-        record.toCompany && (record.toCompany.companyName || record.toCompany.name),
         record.accountName,
         record.account && (record.account.accountName || record.account.name),
         record.customer && (record.customer.accountName || record.customer.companyName || record.customer.name),
         record.company && (record.company.companyName || record.company.name),
         record.companyName,
-        customFieldValues.accountName[0],
         projectInfo.accountName,
         fallbackAccountName,
         "Rocketlane Account",
@@ -2154,7 +2152,6 @@ function enrichInvoiceFromDetailPayload(invoice, detailRecord, projectLookup) {
   const detailAccountName = pickPreferredAccountName([
     detail.accountName,
     detail.company && (detail.company.companyName || detail.company.name),
-    detail.toCompany && (detail.toCompany.companyName || detail.toCompany.name),
     detail.customer && (detail.customer.companyName || detail.customer.name),
     detail.account && (detail.account.accountName || detail.account.companyName || detail.account.name),
   ]);

@@ -14,7 +14,7 @@
     "expert advisors program invoices",
   ];
   const FIELD_ALIAS_GROUPS = {
-    accountName: ["account", "client", "customer", "company"],
+    accountName: ["account"],
     createdBy: ["created by", "createdby", "creator"],
     quantityHours: ["qty", "quantity", "hours", "hour"],
     contractName: ["contract name", "contract"],
@@ -68,7 +68,7 @@
     searchServerMatchedCount: null,
     searchVerifyTimer: 0,
     isFilterPanelOpen: false,
-    pageSize: 25,
+    pageSize: 50,
     currentPage: 1,
     sortBy: "issueDate",
     sortDirection: "desc",
@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260623a";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260623b";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -2852,7 +2852,6 @@
     );
 
     const fieldAliasValues = extractInvoiceFieldAliasValues(node);
-    const accountFieldValue = pickFirst(fieldAliasValues.accountName && fieldAliasValues.accountName[0]);
     const createdByFieldName = isLikelyDisplayName(
       fieldAliasValues.createdBy && fieldAliasValues.createdBy[0]
     )
@@ -2946,7 +2945,6 @@
           node.customer && (node.customer.accountName || node.customer.companyName || node.customer.name),
           node.company && (node.company.companyName || node.company.name),
           node.companyName,
-          accountFieldValue,
           project.accountName,
           state.context && state.context.accountName,
           "Rocketlane Account",

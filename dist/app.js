@@ -102,7 +102,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260622h";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260623a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4713,10 +4713,24 @@
       for (let i = 0; i < invoicesToExport.length; i += 1) {
         const invoice = invoicesToExport[i];
         let preview = null;
+        let nativePdfBytes = null;
         try {
           preview = await fetchInvoicePreviewFromServerAction(invoice);
         } catch (_error) {
           preview = null;
+        }
+        const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
+          pdfDataUrl:
+            (preview && preview.pdfDataUrl) ||
+            invoice.previewPdfDataUrl ||
+            "",
+          pdfBase64:
+            (preview && preview.pdfBase64) ||
+            invoice.previewPdfBase64 ||
+            "",
+        });
+        if (preferredPdfDataUrl) {
+          nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
         }
         csvRows.push([
         formatStatus(invoice.invoiceStatus),
@@ -4732,10 +4746,14 @@
         formatHours(invoice.quantityHours),
         ]);
         let pdfBytesToWrite = null;
-        const pdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-        const generatedPdfBytes = pdfDataUrlToBytes(pdfDataUrl);
-        if (looksLikePdfBytes(generatedPdfBytes)) {
-          pdfBytesToWrite = generatedPdfBytes;
+        if (looksLikePdfBytes(nativePdfBytes)) {
+          pdfBytesToWrite = nativePdfBytes;
+        } else {
+          const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+          const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
+          if (looksLikePdfBytes(generatedPdfBytes)) {
+            pdfBytesToWrite = generatedPdfBytes;
+          }
         }
         if (pdfBytesToWrite) {
           zip.file(

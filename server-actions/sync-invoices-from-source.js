@@ -891,8 +891,9 @@ async function removeLogoFromPdfBytes(pdfBytes) {
     }
     const maskWidth = Math.max(70, pageWidth * 0.18);
     const maskHeight = Math.max(70, pageHeight * 0.16);
-    const x = Math.max(0, pageWidth - maskWidth - pageWidth * 0.06);
-    const y = Math.max(0, pageHeight - maskHeight - pageHeight * 0.08);
+    // Nudge mask slightly up/left to align with Rocketlane logo bounds.
+    const x = Math.max(0, pageWidth - maskWidth - pageWidth * 0.075);
+    const y = Math.max(0, pageHeight - maskHeight - pageHeight * 0.065);
     firstPage.drawRectangle({
       x,
       y,

@@ -91,7 +91,10 @@ input {
 .app-logo {
   width: 48px;
   height: 48px;
-  border-radius: 10px;
+  object-fit: contain;
+  object-position: center;
+  border-radius: 0;
+  flex: 0 0 auto;
 }
 
 .eyebrow {

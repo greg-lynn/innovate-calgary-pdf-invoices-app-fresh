@@ -104,7 +104,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260723a";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260723b";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3489,6 +3489,8 @@
       }
       toggleInvoiceDownloadSelection(invoice.id, Boolean(checked), false);
     });
+    // Re-render rows so each visible checkbox immediately reflects select-all state.
+    renderInvoiceTable();
     renderSelectAllState();
     renderExportInsight();
   }
@@ -4668,7 +4670,13 @@
         while (cursor < source.length) {
           const index = cursor;
           cursor += 1;
-          output[index] = await mapper(source[index], index);
+          try {
+            output[index] = await mapper(source[index], index);
+          } catch (error) {
+            output[index] = {
+              __error: simplifyError(error),
+            };
+          }
         }
       })()
     );
@@ -4738,42 +4746,47 @@
         async (invoice) => {
           let preview = null;
           let nativePdfBytes = null;
-          const cachedPdfDataUrl = normalizePreviewPdfDataUrl({
-            pdfDataUrl: invoice.previewPdfDataUrl || "",
-            pdfBase64: invoice.previewPdfBase64 || "",
-          });
-          if (cachedPdfDataUrl) {
-            nativePdfBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
-          }
-          if (!looksLikePdfBytes(nativePdfBytes)) {
-            try {
-              preview = await fetchInvoicePreviewFromServerAction(invoice);
-            } catch (_error) {
-              preview = null;
-            }
-            const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
-              pdfDataUrl:
-                (preview && preview.pdfDataUrl) ||
-                invoice.previewPdfDataUrl ||
-                "",
-              pdfBase64:
-                (preview && preview.pdfBase64) ||
-                invoice.previewPdfBase64 ||
-                "",
-            });
-            if (preferredPdfDataUrl) {
-              nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
-            }
-          }
+          let invoiceError = "";
           let pdfBytesToWrite = null;
-          if (looksLikePdfBytes(nativePdfBytes)) {
-            pdfBytesToWrite = nativePdfBytes;
-          } else {
-            const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-            const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
-            if (looksLikePdfBytes(generatedPdfBytes)) {
-              pdfBytesToWrite = generatedPdfBytes;
+          try {
+            const cachedPdfDataUrl = normalizePreviewPdfDataUrl({
+              pdfDataUrl: invoice.previewPdfDataUrl || "",
+              pdfBase64: invoice.previewPdfBase64 || "",
+            });
+            if (cachedPdfDataUrl) {
+              nativePdfBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
             }
+            if (!looksLikePdfBytes(nativePdfBytes)) {
+              try {
+                preview = await fetchInvoicePreviewFromServerAction(invoice);
+              } catch (_error) {
+                preview = null;
+              }
+              const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
+                pdfDataUrl:
+                  (preview && preview.pdfDataUrl) ||
+                  invoice.previewPdfDataUrl ||
+                  "",
+                pdfBase64:
+                  (preview && preview.pdfBase64) ||
+                  invoice.previewPdfBase64 ||
+                  "",
+              });
+              if (preferredPdfDataUrl) {
+                nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
+              }
+            }
+            if (looksLikePdfBytes(nativePdfBytes)) {
+              pdfBytesToWrite = nativePdfBytes;
+            } else {
+              const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+              const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
+              if (looksLikePdfBytes(generatedPdfBytes)) {
+                pdfBytesToWrite = generatedPdfBytes;
+              }
+            }
+          } catch (error) {
+            invoiceError = simplifyError(error);
           }
           processedCount += 1;
           if (refs.exportInsight) {
@@ -4787,12 +4800,18 @@
           return {
             invoice,
             pdfBytesToWrite,
+            error: invoiceError,
           };
         }
       );
 
       exportResults.forEach((result) => {
-        const invoice = result.invoice;
+        const invoice = result && result.invoice;
+        if (!invoice) {
+          missingPdfCount += 1;
+          appendLog("PDF_PREVIEW_FAILED", "Skipped invoice export due to unexpected processing error.");
+          return;
+        }
         csvRows.push([
           formatStatus(invoice.invoiceStatus),
           invoice.invoiceNumber,
@@ -4815,6 +4834,13 @@
           return;
         }
         missingPdfCount += 1;
+        if (result && result.error) {
+          appendLog(
+            "PDF_PREVIEW_FAILED",
+            "Unable to prepare PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown"),
+            result.error
+          );
+        }
         appendLog(
           "PDF_PREVIEW_FAILED",
           "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")

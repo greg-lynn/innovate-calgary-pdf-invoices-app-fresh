@@ -1303,6 +1303,9 @@ async function requestCollection(baseUrl, headers, paths, preferredKeys) {
         seen.add(key);
         rows.push(record);
       });
+      if (records.length > 0) {
+        break;
+      }
     } catch (error) {
       errors.push(String(error && error.message ? error.message : error));
     }
@@ -2234,7 +2237,7 @@ function collectRoleTokens(value, target, depth) {
   });
 }
 
-function isAdminToken(text) {
+function hasFullInvoiceAccessToken(text) {
   const value = String(text || "")
     .toLowerCase()
     .replace(/[_-]+/g, " ");
@@ -2243,9 +2246,14 @@ function isAdminToken(text) {
   }
   return (
     /(^|\b)account\s*admin(istrator)?(\b|$)/.test(value) ||
+    /(^|\b)finance(\b|$)/.test(value) ||
     value === "admin" ||
     value === "administrator"
   );
+}
+
+function isAdminToken(text) {
+  return hasFullInvoiceAccessToken(text);
 }
 
 function collectPermissionTokens(value, target, depth) {
@@ -2285,7 +2293,7 @@ function extractPermissionFromAny(record) {
   const tokens = [];
   collectPermissionTokens(record, tokens, 0);
   const deduped = dedupeStrings(tokens);
-  const adminToken = deduped.find((token) => isAdminToken(token));
+  const adminToken = deduped.find((token) => hasFullInvoiceAccessToken(token));
   if (adminToken) {
     return adminToken;
   }
@@ -2352,7 +2360,9 @@ function deriveViewerAccess(request, context) {
       viewerContext.userRole
   );
 
-  const isAdmin = isAdminToken(permission);
+  const isAdmin =
+    hasFullInvoiceAccessToken(permission) ||
+    hasFullInvoiceAccessToken(roleLabel);
 
   return {
     id,
@@ -2420,10 +2430,13 @@ function resolveViewerFromMembers(baseViewer, members, request) {
   const permission = pickFirst(
     matched.permission ||
       viewer.permission ||
-      (isAdminToken(matched.roleLabel) ? matched.roleLabel : "")
+      (hasFullInvoiceAccessToken(matched.roleLabel) ? matched.roleLabel : "")
   );
   const roleLabel = pickFirst(matched.roleLabel || viewer.roleLabel);
-  const isAdmin = isAdminToken(permission) || viewer.isAdmin === true;
+  const isAdmin =
+    hasFullInvoiceAccessToken(permission) ||
+    hasFullInvoiceAccessToken(roleLabel) ||
+    viewer.isAdmin === true;
   return {
     id: pickFirst(matched.id || viewer.id),
     email: normalizeEmail(pickFirst(matched.email || viewer.email)),
@@ -2700,7 +2713,7 @@ module.exports = {
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
-      const lineEnrichmentTasks = [];
+      const lineEnrichmentQueue = [];
       for (let idx = 0; idx < globalInvoices.length; idx += 1) {
         const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
@@ -2715,42 +2728,62 @@ module.exports = {
           );
           if (invoiceId) {
             const targetInvoice = normalized;
-            lineEnrichmentTasks.push(
-              requestCollection(
-                baseUrl,
-                headers,
-                [`/api/1.0/invoices/${invoiceId}/lines`],
-                ["data", "lines", "items", "results"]
-              )
-                .then((lineFetch) => {
+            const shouldEnrichFromLines =
+              Number(targetInvoice.quantityHours || 0) <= 0 ||
+              !pickFirst(targetInvoice.hub) ||
+              !pickFirst(targetInvoice.program);
+            if (shouldEnrichFromLines) {
+              lineEnrichmentQueue.push({
+                invoiceId,
+                targetInvoice,
+              });
+            }
+          }
+          collectedInvoices.push(normalized);
+        }
+      }
+      if (lineEnrichmentQueue.length) {
+        const maxLineEnrichmentConcurrency = 6;
+        let lineEnrichmentIndex = 0;
+        const workers = Array.from(
+          { length: Math.min(maxLineEnrichmentConcurrency, lineEnrichmentQueue.length) },
+          () =>
+            (async () => {
+              while (lineEnrichmentIndex < lineEnrichmentQueue.length) {
+                const currentIndex = lineEnrichmentIndex;
+                lineEnrichmentIndex += 1;
+                const entry = lineEnrichmentQueue[currentIndex];
+                try {
+                  const lineFetch = await requestCollection(
+                    baseUrl,
+                    headers,
+                    [`/api/1.0/invoices/${entry.invoiceId}/lines`],
+                    ["data", "lines", "items", "results"]
+                  );
                   diagnostics.invoiceErrors.push(...lineFetch.errors);
                   const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
                   if (fetchedQuantity > 0) {
-                    targetInvoice.quantityHours = fetchedQuantity;
+                    entry.targetInvoice.quantityHours = fetchedQuantity;
                   }
                   const extractedLineValues = extractHubProgramFromLineItems(lineFetch.rows);
                   if (Array.isArray(extractedLineValues.hub) && extractedLineValues.hub.length) {
-                    targetInvoice.hub = compactJoined(extractedLineValues.hub);
+                    entry.targetInvoice.hub = compactJoined(extractedLineValues.hub);
                   }
                   if (
                     Array.isArray(extractedLineValues.program) &&
                     extractedLineValues.program.length
                   ) {
-                    targetInvoice.program = compactJoined(extractedLineValues.program);
+                    entry.targetInvoice.program = compactJoined(extractedLineValues.program);
                   }
-                })
-                .catch((lineError) => {
+                } catch (lineError) {
                   diagnostics.invoiceErrors.push(
                     String(lineError && lineError.message ? lineError.message : lineError)
                   );
-                })
-            );
-          }
-          collectedInvoices.push(normalized);
-        }
-      }
-      if (lineEnrichmentTasks.length) {
-        await Promise.all(lineEnrichmentTasks);
+                }
+              }
+            })()
+        );
+        await Promise.all(workers);
       }
 
       const membersResult = await requestCollection(
@@ -2806,7 +2839,8 @@ module.exports = {
 
     resolvedViewer = resolveViewerFromMembers(resolvedViewer, members, request);
 
-    const shouldPrefetchPreviewPdfs = request.searchOnly !== true;
+    const shouldPrefetchPreviewPdfs =
+      request.searchOnly !== true && request.prefetchPreviewPdfs === true;
     if (shouldPrefetchPreviewPdfs) {
       await attachPreviewPdfToInvoices(
         diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",

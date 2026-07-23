@@ -13,6 +13,8 @@
     "expert advisor program invoices",
     "expert advisors program invoices",
   ];
+  const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "In Review"];
+  const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
   const FIELD_ALIAS_GROUPS = {
     accountName: ["account"],
     createdBy: ["created by", "createdby", "creator"],
@@ -102,7 +104,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260623c";
+  window.__invoiceAccessBuild = "preview-all-invoices-20260723a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1254,6 +1256,7 @@
         accountName: state.context.accountName || "",
         workspaceBaseUrl,
         workspaceCandidates,
+        prefetchPreviewPdfs: false,
         viewerContext: {
           userId: state.context.userId || "",
           userEmail: state.context.userEmail || "",
@@ -3604,7 +3607,7 @@
   }
 
   function renderFilterControls() {
-    populateSelectOptions(refs.filterInvoiceStatus, uniqueFieldValues("invoiceStatus").map(formatStatus));
+    populateSelectOptions(refs.filterInvoiceStatus, INVOICE_STATUS_FILTER_OPTIONS);
     populateSelectOptions(refs.filterProjectManager, uniqueFieldValues("ownerName"));
     const amountValues = dedupeStrings(
       getAccessibleInvoices().map((invoice) => String(Number(invoice.amount || 0)))
@@ -4652,6 +4655,27 @@
       .replace(/'/g, "&#39;");
   }
 
+  async function mapWithConcurrency(items, concurrency, mapper) {
+    const source = Array.isArray(items) ? items : [];
+    if (!source.length) {
+      return [];
+    }
+    const limit = Math.max(1, Number(concurrency || 1));
+    const output = new Array(source.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(limit, source.length) }, () =>
+      (async () => {
+        while (cursor < source.length) {
+          const index = cursor;
+          cursor += 1;
+          output[index] = await mapper(source[index], index);
+        }
+      })()
+    );
+    await Promise.all(workers);
+    return output;
+  }
+
   async function onDownloadZip() {
     const JSZipCtor = window.JSZip;
     if (!JSZipCtor) {
@@ -4707,66 +4731,95 @@
       ];
       let pdfFileCount = 0;
       let missingPdfCount = 0;
-
-      for (let i = 0; i < invoicesToExport.length; i += 1) {
-        const invoice = invoicesToExport[i];
-        let preview = null;
-        let nativePdfBytes = null;
-        try {
-          preview = await fetchInvoicePreviewFromServerAction(invoice);
-        } catch (_error) {
-          preview = null;
-        }
-        const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
-          pdfDataUrl:
-            (preview && preview.pdfDataUrl) ||
-            invoice.previewPdfDataUrl ||
-            "",
-          pdfBase64:
-            (preview && preview.pdfBase64) ||
-            invoice.previewPdfBase64 ||
-            "",
-        });
-        if (preferredPdfDataUrl) {
-          nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
-        }
-        csvRows.push([
-        formatStatus(invoice.invoiceStatus),
-        invoice.invoiceNumber,
-        invoice.ownerName || "",
-        formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
-        invoice.accountName,
-        invoice.contractName || "",
-        invoice.hub || "",
-        invoice.program || "",
-        formatDate(invoice.issueDate || invoice.invoiceDate),
-        formatDate(invoice.dueDate),
-        formatHours(invoice.quantityHours),
-        ]);
-        let pdfBytesToWrite = null;
-        if (looksLikePdfBytes(nativePdfBytes)) {
-          pdfBytesToWrite = nativePdfBytes;
-        } else {
-          const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-          const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
-          if (looksLikePdfBytes(generatedPdfBytes)) {
-            pdfBytesToWrite = generatedPdfBytes;
+      let processedCount = 0;
+      const exportResults = await mapWithConcurrency(
+        invoicesToExport,
+        ZIP_PREVIEW_FETCH_CONCURRENCY,
+        async (invoice) => {
+          let preview = null;
+          let nativePdfBytes = null;
+          const cachedPdfDataUrl = normalizePreviewPdfDataUrl({
+            pdfDataUrl: invoice.previewPdfDataUrl || "",
+            pdfBase64: invoice.previewPdfBase64 || "",
+          });
+          if (cachedPdfDataUrl) {
+            nativePdfBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
           }
+          if (!looksLikePdfBytes(nativePdfBytes)) {
+            try {
+              preview = await fetchInvoicePreviewFromServerAction(invoice);
+            } catch (_error) {
+              preview = null;
+            }
+            const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
+              pdfDataUrl:
+                (preview && preview.pdfDataUrl) ||
+                invoice.previewPdfDataUrl ||
+                "",
+              pdfBase64:
+                (preview && preview.pdfBase64) ||
+                invoice.previewPdfBase64 ||
+                "",
+            });
+            if (preferredPdfDataUrl) {
+              nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
+            }
+          }
+          let pdfBytesToWrite = null;
+          if (looksLikePdfBytes(nativePdfBytes)) {
+            pdfBytesToWrite = nativePdfBytes;
+          } else {
+            const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+            const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
+            if (looksLikePdfBytes(generatedPdfBytes)) {
+              pdfBytesToWrite = generatedPdfBytes;
+            }
+          }
+          processedCount += 1;
+          if (refs.exportInsight) {
+            refs.exportInsight.textContent =
+              "Preparing ZIP export... (" +
+              processedCount +
+              "/" +
+              invoicesToExport.length +
+              ")";
+          }
+          return {
+            invoice,
+            pdfBytesToWrite,
+          };
         }
-        if (pdfBytesToWrite) {
+      );
+
+      exportResults.forEach((result) => {
+        const invoice = result.invoice;
+        csvRows.push([
+          formatStatus(invoice.invoiceStatus),
+          invoice.invoiceNumber,
+          invoice.ownerName || "",
+          formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
+          invoice.accountName,
+          invoice.contractName || "",
+          invoice.hub || "",
+          invoice.program || "",
+          formatDate(invoice.issueDate || invoice.invoiceDate),
+          formatDate(invoice.dueDate),
+          formatHours(invoice.quantityHours),
+        ]);
+        if (result.pdfBytesToWrite) {
           zip.file(
             "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-            pdfBytesToWrite
+            result.pdfBytesToWrite
           );
           pdfFileCount += 1;
-        } else {
-          missingPdfCount += 1;
-          appendLog(
-            "PDF_PREVIEW_FAILED",
-            "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
-          );
+          return;
         }
-      }
+        missingPdfCount += 1;
+        appendLog(
+          "PDF_PREVIEW_FAILED",
+          "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+        );
+      });
 
       zip.file("invoices.csv", toCsv(csvRows));
       const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
@@ -5259,6 +5312,7 @@
 
     if (
       /(^|\b)(account|workspace)\s*admin(istrator)?(\b|$)/.test(haystack) ||
+      /(^|\b)finance(\b|$)/.test(haystack) ||
       /(^|\b)admin(\b|$)/.test(haystack)
     ) {
       return "admin";
@@ -5276,24 +5330,13 @@
   }
 
   function normalizePermissionRole(value) {
-    const text = String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[_-]+/g, " ");
-    if (!text) {
-      return "";
-    }
-    if (
-      /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text) ||
-      text === "admin" ||
-      text === "administrator"
-    ) {
+    if (hasFullInvoiceAccessLabel(value)) {
       return "admin";
     }
     return "non_admin";
   }
 
-  function isLikelyAdminLabel(value) {
+  function hasFullInvoiceAccessLabel(value) {
     const text = String(value || "")
       .trim()
       .toLowerCase()
@@ -5301,7 +5344,19 @@
     if (!text) {
       return false;
     }
-    return /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text);
+    if (
+      /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text) ||
+      /(^|\b)finance(\b|$)/.test(text) ||
+      text === "admin" ||
+      text === "administrator"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function isLikelyAdminLabel(value) {
+    return hasFullInvoiceAccessLabel(value);
   }
 
   function collectRoleTokens(value, target, depth) {
@@ -5365,6 +5420,7 @@
     }
     if (
       text === "admin" ||
+      text.includes("finance") ||
       text.includes("account admin") ||
       text.includes("workspace admin") ||
       text.includes("account administrator") ||

@@ -37,7 +37,8 @@ fi
   else
     npm install >/dev/null
   fi
-  npx -y @rocketlane/rli@latest build >/dev/null
+  npm install --no-save @rocketlane/rli@latest @ljharb/tsconfig@latest >/dev/null
+  npx rli build >/dev/null
 
   # Some installer paths expect deploy.json at zip root.
   if [[ -f rli-dist/deploy.json ]]; then

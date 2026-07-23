@@ -9,8 +9,6 @@
     "screenshots": "node scripts/capture-screenshots.mjs"
   },
   "devDependencies": {
-    "@ljharb/tsconfig": "^0.3.2",
-    "@rocketlane/rli": "^1.7.0-beta.27",
     "playwright": "^1.58.2"
   },
   "dependencies": {

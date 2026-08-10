@@ -3949,25 +3949,26 @@
         setModalPdfFrameSrc(previewPdfDataUrl);
         return;
       }
-      const nativePdfBytes = await withTimeout(
-        fetchNativeInvoicePdfBytes(
-          mergeObjects(invoice || {}, {
-            invoiceId:
-              pickFirst(
-                preview &&
-                  typeof preview === "object" &&
-                  (preview.invoiceId || preview.id || preview.invoiceID)
-              ) || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-          })
-        ),
-        PREVIEW_FETCH_TIMEOUT_MS,
-        "Native invoice PDF request timed out"
-      ).catch(() => null);
-      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+      const resolvedPreviewInvoiceId = pickFirst(
+        preview &&
+          typeof preview === "object" &&
+          (preview.invoiceId || preview.id || preview.invoiceID)
+      );
+      const directPreviewUrl = resolveNativeInvoiceDownloadUrl(
+        mergeObjects(invoice || {}, {
+          invoiceId:
+            pickFirst(resolvedPreviewInvoiceId) ||
+            pickFirst(invoice && (invoice.invoiceId || invoice.id)),
+        })
+      );
+      if (directPreviewUrl) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(directPreviewUrl);
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,
-            pdfDataUrl: "",
+            pdfDataUrl: directPreviewUrl,
             isNativePdf: true,
           };
         }

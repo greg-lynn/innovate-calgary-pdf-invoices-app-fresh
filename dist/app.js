@@ -3950,7 +3950,16 @@
         return;
       }
       const nativePdfBytes = await withTimeout(
-        fetchNativeInvoicePdfBytes(invoice),
+        fetchNativeInvoicePdfBytes(
+          mergeObjects(invoice || {}, {
+            invoiceId:
+              pickFirst(
+                preview &&
+                  typeof preview === "object" &&
+                  (preview.invoiceId || preview.id || preview.invoiceID)
+              ) || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
+          })
+        ),
         PREVIEW_FETCH_TIMEOUT_MS,
         "Native invoice PDF request timed out"
       ).catch(() => null);
@@ -4089,7 +4098,9 @@
     const encodedId = encodeURIComponent(String(invoiceId).trim());
     return dedupeStrings([
       `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
+      `${normalizedBase}/api/1.0/invoices/${encodedId}/generate`,
       `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/api/1.0/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/invoices/${encodedId}/attachments/download`,
       resolveNativeInvoiceDownloadUrl(invoice),
     ]);
@@ -4132,10 +4143,16 @@
     for (let i = 0; i < candidateUrls.length; i += 1) {
       const nativeDownloadUrl = candidateUrls[i];
       try {
-        const response = await fetch(nativeDownloadUrl, {
+        let response = await fetch(nativeDownloadUrl, {
           method: "GET",
           credentials: "include",
         });
+        if (!response.ok && /\/generate(\?|$)/i.test(nativeDownloadUrl)) {
+          response = await fetch(nativeDownloadUrl, {
+            method: "POST",
+            credentials: "include",
+          });
+        }
         if (!response.ok) {
           continue;
         }
@@ -4355,6 +4372,33 @@
   function safeCreateInvoicePdfDataUrl(invoice, preview) {
     try {
       return createInvoicePdfDataUrl(invoice, preview);
+    } catch (_error) {
+      return createEmergencyInvoicePdfDataUrl(invoice);
+    }
+  }
+
+  function createEmergencyInvoicePdfDataUrl(invoice) {
+    try {
+      const minimalInvoice = {
+        invoiceNumber: String(
+          pickFirst(invoice && (invoice.invoiceNumber || invoice.invoiceId || invoice.id)) ||
+            "INV-UNKNOWN"
+        ),
+        invoiceName: pickFirst(invoice && invoice.invoiceName) || "Invoice",
+        accountName: pickFirst(invoice && invoice.accountName) || "Rocketlane Account",
+        ownerName: pickFirst(invoice && invoice.ownerName) || "Unassigned",
+        invoiceDate: pickFirst(invoice && (invoice.invoiceDate || invoice.issueDate)) || "",
+        issueDate: pickFirst(invoice && (invoice.issueDate || invoice.invoiceDate)) || "",
+        dueDate: pickFirst(invoice && invoice.dueDate) || "",
+        amount: Number((invoice && invoice.amount) || 0),
+        currencyCode: pickFirst(invoice && invoice.currencyCode) || "USD",
+        associatedEmails: [],
+      };
+      return createInvoicePdfDataUrl(minimalInvoice, {
+        allFields: [],
+        lineItems: [],
+        payments: [],
+      });
     } catch (_error) {
       return SAMPLE_PDF_DATA_URL;
     }

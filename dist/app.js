@@ -4014,47 +4014,33 @@
         }
         return;
       }
-      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(
-        invoice,
-        previewForFallback || null
+      appendLog(
+        "PDF_PREVIEW_FAILED",
+        "Native preview unavailable for invoice " +
+          (invoice.invoiceNumber || invoice.id || "unknown") +
+          ". Fallback rendering is disabled to prevent mock invoice previews."
       );
-      const fallbackPdfBytes = pdfDataUrlToBytes(fallbackPdfDataUrl);
-      if (
-        fallbackPdfDataUrl &&
-        (looksLikePdfBytes(fallbackPdfBytes) ||
-          fallbackPdfDataUrl.startsWith("data:application/pdf"))
-      ) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(fallbackPdfDataUrl);
-        return;
-      }
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
         invoice,
         previewForFallback,
         false,
-        "Unable to load native invoice PDF preview right now."
+        "Unable to load native invoice PDF preview right now. This app now blocks mock fallback previews."
       );
     } catch (_error) {
-      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, null);
-      if (
-        fallbackPdfDataUrl &&
-        fallbackPdfDataUrl.startsWith("data:application/pdf")
-      ) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(fallbackPdfDataUrl);
-        return;
-      }
+      appendLog(
+        "PDF_PREVIEW_FAILED",
+        "Native preview failed for invoice " + (invoice.invoiceNumber || invoice.id || "unknown") + ".",
+        _error
+      );
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
         invoice,
         null,
         false,
-        "Unable to load invoice preview details right now."
+        "Unable to load native invoice preview details right now."
       );
     }
   }

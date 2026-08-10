@@ -939,7 +939,7 @@ async function removeLogoFromPdfBytes(pdfBytes) {
   }
 }
 
-async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
+async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
     return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
@@ -1010,6 +1010,105 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
       // Ignore and continue with next candidate endpoint.
     }
   }
+  const invoiceUrlPdf = await fetchPreviewPdfDataFromUrlCandidates(
+    baseUrl,
+    headers,
+    invoiceRecord
+  );
+  if (invoiceUrlPdf && invoiceUrlPdf.pdfDataUrl) {
+    return invoiceUrlPdf;
+  }
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+}
+
+function collectPreviewPdfUrlCandidates(invoiceRecord) {
+  if (!invoiceRecord || typeof invoiceRecord !== "object") {
+    return [];
+  }
+  const urls = [];
+  const push = (value) => {
+    const text = pickFirst(value);
+    if (text) {
+      urls.push(text);
+    }
+  };
+  push(invoiceRecord.signedUrl);
+  push(invoiceRecord.downloadUrl);
+  push(invoiceRecord.fileUrl);
+  push(invoiceRecord.url);
+  push(invoiceRecord.href);
+  push(invoiceRecord.previewUrl);
+  push(invoiceRecord.attachmentUrl);
+  push(invoiceRecord.documentUrl);
+  push(invoiceRecord.pdfUrl);
+  if (invoiceRecord.file && typeof invoiceRecord.file === "object") {
+    push(invoiceRecord.file.signedUrl);
+    push(invoiceRecord.file.downloadUrl);
+    push(invoiceRecord.file.url);
+  }
+  const attachmentLists = [
+    invoiceRecord.attachments,
+    invoiceRecord.attachmentFiles,
+    invoiceRecord.files,
+    invoiceRecord.documents,
+  ];
+  attachmentLists.forEach((list) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    list.forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      push(entry.signedUrl || entry.downloadUrl || entry.fileUrl || entry.url || entry.href);
+      if (entry.file && typeof entry.file === "object") {
+        push(entry.file.signedUrl || entry.file.downloadUrl || entry.file.url);
+      }
+    });
+  });
+  return dedupeStrings(urls);
+}
+
+async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRecord) {
+  const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
+  const candidates = collectPreviewPdfUrlCandidates(invoiceRecord);
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidateUrl = ensureAbsoluteUrl(baseUrl, candidates[i]);
+    if (!candidateUrl) {
+      continue;
+    }
+    try {
+      const pdfBytes = await requestBinaryWithMethods(candidateUrl, requestHeaders, ["GET"]);
+      if (looksLikePdfBytes(pdfBytes)) {
+        const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
+        const pdfBase64 = Buffer.from(logoMaskedPdfBytes).toString("base64");
+        return {
+          pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
+          pdfBase64,
+          pdfSource: "invoice-url-logo-masked",
+        };
+      }
+      const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
+      if (redirectedPdfUrl) {
+        const redirectedBytes = await requestBinaryWithMethods(
+          redirectedPdfUrl,
+          { Accept: "*/*" },
+          ["GET"]
+        );
+        if (looksLikePdfBytes(redirectedBytes)) {
+          const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+          const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
+          return {
+            pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+            pdfBase64: redirectedBase64,
+            pdfSource: "invoice-url-redirect-logo-masked",
+          };
+        }
+      }
+    } catch (_error) {
+      // Try the next URL candidate.
+    }
+  }
   return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
 }
 
@@ -1045,7 +1144,7 @@ async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostic
         const entry = queue[currentIndex];
         const invoiceId = encodeURIComponent(entry.invoiceId);
         try {
-          const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId);
+          const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId, entry.invoice);
           if (previewPdf && previewPdf.pdfBase64) {
             entry.invoice.previewPdfBase64 = previewPdf.pdfBase64;
             entry.invoice.previewPdfDataUrl = previewPdf.pdfDataUrl;
@@ -2657,7 +2756,6 @@ module.exports = {
               } catch (_error) {
                 payments = [];
               }
-              const previewPdf = await fetchPreviewPdfData(baseUrl, headers, previewInvoiceId);
               const invoiceRecord = extractRecordObject(invoicePayload || {}, [
                 "invoice",
                 "data",
@@ -2665,6 +2763,12 @@ module.exports = {
                 "payload",
                 "response",
               ]) || {};
+              const previewPdf = await fetchPreviewPdfData(
+                baseUrl,
+                headers,
+                previewInvoiceId,
+                invoiceRecord
+              );
               const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
               if (previewPdf.pdfDataUrl) {
                 preview.pdfDataUrl = previewPdf.pdfDataUrl;

@@ -3955,6 +3955,9 @@
           (preview.invoiceId || preview.id || preview.invoiceID)
       );
       const currentPreviewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
+      let previewForFallback = preview || null;
+      let nativePreviewInvoiceId =
+        pickFirst(resolvedPreviewInvoiceId) || pickFirst(currentPreviewInvoiceId) || "";
       if (resolvedPreviewInvoiceId && resolvedPreviewInvoiceId !== currentPreviewInvoiceId) {
         const resolvedPreview = await withTimeout(
           fetchInvoicePreviewFromServerAction(
@@ -3984,8 +3987,37 @@
           setModalPdfFrameSrc(resolvedPreviewPdfDataUrl);
           return;
         }
+        if (resolvedPreview && typeof resolvedPreview === "object") {
+          previewForFallback = resolvedPreview;
+          nativePreviewInvoiceId =
+            pickFirst(
+              resolvedPreview.invoiceId || resolvedPreview.id || resolvedPreview.invoiceID
+            ) || nativePreviewInvoiceId;
+        }
       }
-      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, preview || null);
+      const nativePdfBytes = await withTimeout(
+        fetchNativeInvoicePdfBytes(
+          mergeObjects(invoice || {}, {
+            invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
+          })
+        ),
+        PREVIEW_FETCH_TIMEOUT_MS,
+        "Native invoice PDF request timed out"
+      ).catch(() => null);
+      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: previewForFallback || null,
+            pdfDataUrl: "",
+            isNativePdf: true,
+          };
+        }
+        return;
+      }
+      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(
+        invoice,
+        previewForFallback || null
+      );
       const fallbackPdfBytes = pdfDataUrlToBytes(fallbackPdfDataUrl);
       if (
         fallbackPdfDataUrl &&
@@ -4001,7 +4033,7 @@
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
         invoice,
-        preview,
+        previewForFallback,
         false,
         "Unable to load native invoice PDF preview right now."
       );

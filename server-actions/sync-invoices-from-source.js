@@ -760,6 +760,31 @@ async function requestBinary(url, headers) {
   return new Uint8Array(buffer);
 }
 
+async function requestBinaryWithMethods(url, headers, methods) {
+  const methodList = Array.isArray(methods) && methods.length ? methods : ["GET"];
+  let lastError = null;
+  for (let i = 0; i < methodList.length; i += 1) {
+    const method = String(methodList[i] || "GET").toUpperCase();
+    try {
+      const response = await fetch(url, {
+        method,
+        headers,
+      });
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status}) for ${url}`);
+      }
+      const buffer = await response.arrayBuffer();
+      if (!buffer || !buffer.byteLength) {
+        throw new Error(`Empty binary payload for ${url}`);
+      }
+      return new Uint8Array(buffer);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Unable to fetch binary payload for ${url}`);
+}
+
 function bytesToPdfDataUrl(bytes) {
   if (!(bytes instanceof Uint8Array) || !bytes.byteLength) {
     return "";
@@ -924,26 +949,36 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
     {
       path: `/api/v1/invoices/${encodedId}/generate`,
       source: "api-v1-generate",
+      methods: ["GET", "POST"],
     },
     {
       path: `/api/1.0/invoices/${encodedId}/generate`,
       source: "api-1-generate",
+      methods: ["GET", "POST"],
     },
     {
       path: `/api/v1/invoices/${encodedId}/attachments/download`,
       source: "api-v1-attachments-download",
+      methods: ["GET"],
     },
     {
       path: `/api/1.0/invoices/${encodedId}/attachments/download`,
       source: "api-1-attachments-download",
+      methods: ["GET"],
+    },
+    {
+      path: `/invoices/${encodedId}/attachments/download`,
+      source: "web-attachments-download",
+      methods: ["GET"],
     },
   ];
   for (let i = 0; i < pdfPaths.length; i += 1) {
     const candidate = pdfPaths[i];
     try {
-      const pdfBytes = await requestBinary(
+      const pdfBytes = await requestBinaryWithMethods(
         ensureAbsoluteUrl(baseUrl, candidate.path),
-        requestHeaders
+        requestHeaders,
+        candidate.methods
       );
       if (looksLikePdfBytes(pdfBytes)) {
         const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
@@ -956,9 +991,11 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
       }
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
       if (redirectedPdfUrl) {
-        const redirectedBytes = await requestBinary(redirectedPdfUrl, {
-          Accept: "*/*",
-        });
+        const redirectedBytes = await requestBinaryWithMethods(
+          redirectedPdfUrl,
+          { Accept: "*/*" },
+          ["GET"]
+        );
         if (looksLikePdfBytes(redirectedBytes)) {
           const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
           const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");

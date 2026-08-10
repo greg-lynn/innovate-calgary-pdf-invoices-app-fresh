@@ -3954,25 +3954,36 @@
           typeof preview === "object" &&
           (preview.invoiceId || preview.id || preview.invoiceID)
       );
-      const directPreviewUrl = resolveNativeInvoiceDownloadUrl(
-        mergeObjects(invoice || {}, {
-          invoiceId:
-            pickFirst(resolvedPreviewInvoiceId) ||
-            pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-        })
-      );
-      if (directPreviewUrl) {
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(directPreviewUrl);
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: preview || null,
-            pdfDataUrl: directPreviewUrl,
-            isNativePdf: true,
-          };
+      const currentPreviewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
+      if (resolvedPreviewInvoiceId && resolvedPreviewInvoiceId !== currentPreviewInvoiceId) {
+        const resolvedPreview = await withTimeout(
+          fetchInvoicePreviewFromServerAction(
+            mergeObjects(invoice || {}, { invoiceId: resolvedPreviewInvoiceId })
+          ),
+          PREVIEW_FETCH_TIMEOUT_MS,
+          "Resolved invoice preview request timed out"
+        ).catch(() => null);
+        const resolvedPreviewPdfDataUrl = normalizePreviewPdfDataUrl(resolvedPreview || {});
+        const resolvedPreviewPdfBytes = resolvedPreviewPdfDataUrl
+          ? pdfDataUrlToBytes(resolvedPreviewPdfDataUrl)
+          : null;
+        if (
+          resolvedPreviewPdfDataUrl &&
+          (looksLikePdfBytes(resolvedPreviewPdfBytes) ||
+            resolvedPreviewPdfDataUrl.startsWith("data:application/pdf"))
+        ) {
+          if (cacheKey) {
+            state.invoicePreviewCache[cacheKey] = {
+              preview: resolvedPreview || null,
+              pdfDataUrl: resolvedPreviewPdfDataUrl,
+              isNativePdf: true,
+            };
+          }
+          refs.modalPdfFrame.classList.remove("hidden");
+          refs.modalInvoicePreview.classList.add("hidden");
+          setModalPdfFrameSrc(resolvedPreviewPdfDataUrl);
+          return;
         }
-        return;
       }
       const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, preview || null);
       const fallbackPdfBytes = pdfDataUrlToBytes(fallbackPdfDataUrl);
@@ -4493,22 +4504,22 @@
     };
     const attempts = [
       {
-        previewInvoiceId,
-        previewInvoiceNumber: "",
-        invoiceId: previewInvoiceId,
-        invoiceNumberForPreview: "",
-      },
-      {
-        previewInvoiceId,
-        previewInvoiceNumber,
-        invoiceId: previewInvoiceId,
-        invoiceNumberForPreview: previewInvoiceNumber,
-      },
-      {
         previewInvoiceId: "",
         previewInvoiceNumber,
         invoiceId: "",
         invoiceNumberForPreview: previewInvoiceNumber,
+      },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber,
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: previewInvoiceNumber,
+      },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber: "",
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: "",
       },
     ];
     let fallbackPreview = null;

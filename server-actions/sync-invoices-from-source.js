@@ -2567,8 +2567,8 @@ module.exports = {
             request.previewSourceProjectId
           );
           const previewInvoiceIds = dedupeStrings([
-            previewInvoiceIdRequested,
             pickFirst(resolvedInvoiceId),
+            previewInvoiceIdRequested,
           ])
             .map((value) => encodeURIComponent(String(value || "").trim()))
             .filter(Boolean);

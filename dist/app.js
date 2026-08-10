@@ -13,7 +13,7 @@
     "expert advisor program invoices",
     "expert advisors program invoices",
   ];
-  const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "In Review"];
+  const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
   const PREVIEW_FETCH_TIMEOUT_MS = 18000;
   const FIELD_ALIAS_GROUPS = {
@@ -4842,6 +4842,145 @@
     return output;
   }
 
+  function parseHubProgramFromDescription(description) {
+    const text = String(description || "");
+    if (!text) {
+      return { hub: [], program: [] };
+    }
+    const hubValues = [];
+    const programValues = [];
+    const hubPattern = /(?:^|\||\n|\r)\s*hub\s*:\s*([^|\n\r]+)/gi;
+    const programPattern = /(?:^|\||\n|\r)\s*program\s*:\s*([^|\n\r]+)/gi;
+    let match = null;
+    while ((match = hubPattern.exec(text)) != null) {
+      const value = pickFirst(match[1] || "");
+      if (value) {
+        hubValues.push(value);
+      }
+    }
+    while ((match = programPattern.exec(text)) != null) {
+      const value = pickFirst(match[1] || "");
+      if (value) {
+        programValues.push(value);
+      }
+    }
+    return {
+      hub: dedupeStrings(hubValues),
+      program: dedupeStrings(programValues),
+    };
+  }
+
+  function extractHubProgramFromLineItems(lineItems) {
+    const rows = Array.isArray(lineItems) ? lineItems : [];
+    const hubValues = [];
+    const programValues = [];
+    rows.forEach((line) => {
+      if (!line || typeof line !== "object") {
+        return;
+      }
+      const lineAliasValues = extractInvoiceFieldAliasValues(line);
+      if (Array.isArray(lineAliasValues.hub)) {
+        lineAliasValues.hub.forEach((value) => hubValues.push(value));
+      }
+      if (Array.isArray(lineAliasValues.program)) {
+        lineAliasValues.program.forEach((value) => programValues.push(value));
+      }
+      const parsedFromDescription = parseHubProgramFromDescription(
+        pickFirst(line.description || line.name || line.title || "")
+      );
+      if (Array.isArray(parsedFromDescription.hub)) {
+        parsedFromDescription.hub.forEach((value) => hubValues.push(value));
+      }
+      if (Array.isArray(parsedFromDescription.program)) {
+        parsedFromDescription.program.forEach((value) => programValues.push(value));
+      }
+    });
+    return {
+      hub: dedupeStrings(hubValues),
+      program: dedupeStrings(programValues),
+    };
+  }
+
+  function sumPreviewLineItemQuantity(lineItems) {
+    return (Array.isArray(lineItems) ? lineItems : []).reduce((sum, line) => {
+      const quantity = parseNumericValue(
+        pickFirst(
+          line &&
+            (line.quantity ||
+              line.qty ||
+              line.quantityHours ||
+              (line.fields && (line.fields.quantity || line.fields.qty)))
+        )
+      );
+      return sum + (Number.isFinite(quantity) ? quantity : 0);
+    }, 0);
+  }
+
+  function resolveInvoiceExportSummary(invoice, preview) {
+    const baseInvoice = invoice && typeof invoice === "object" ? invoice : {};
+    const previewData = preview && typeof preview === "object" ? preview : {};
+    const invoiceAliasValues = extractInvoiceFieldAliasValues(baseInvoice);
+    const previewAliasValues = extractInvoiceFieldAliasValues(previewData);
+    const lineItemValues = extractHubProgramFromLineItems(previewData.lineItems);
+    const quantityFromInvoice = Number(baseInvoice.quantityHours || 0);
+    const quantityFromInvoiceAliases = Array.isArray(invoiceAliasValues.quantityHours)
+      ? invoiceAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
+      : 0;
+    const quantityFromPreviewAliases = Array.isArray(previewAliasValues.quantityHours)
+      ? previewAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
+      : 0;
+    const quantityFromLines = sumPreviewLineItemQuantity(previewData.lineItems);
+    const quantityHours =
+      (Number.isFinite(quantityFromInvoice) && quantityFromInvoice > 0 && quantityFromInvoice) ||
+      (Number.isFinite(quantityFromInvoiceAliases) &&
+        quantityFromInvoiceAliases > 0 &&
+        quantityFromInvoiceAliases) ||
+      (Number.isFinite(quantityFromPreviewAliases) &&
+        quantityFromPreviewAliases > 0 &&
+        quantityFromPreviewAliases) ||
+      (Number.isFinite(quantityFromLines) && quantityFromLines > 0 && quantityFromLines) ||
+      0;
+    const hub = pickFirst(
+      baseInvoice.hub ||
+        (invoiceAliasValues.hub && invoiceAliasValues.hub[0]) ||
+        (previewAliasValues.hub && previewAliasValues.hub[0]) ||
+        (lineItemValues.hub && lineItemValues.hub[0]) ||
+        ""
+    );
+    const program = pickFirst(
+      baseInvoice.program ||
+        (invoiceAliasValues.program && invoiceAliasValues.program[0]) ||
+        (previewAliasValues.program && previewAliasValues.program[0]) ||
+        (lineItemValues.program && lineItemValues.program[0]) ||
+        ""
+    );
+    const contractName = pickFirst(
+      baseInvoice.contractName ||
+        (invoiceAliasValues.contractName && invoiceAliasValues.contractName[0]) ||
+        (previewAliasValues.contractName && previewAliasValues.contractName[0]) ||
+        ""
+    );
+    return {
+      invoiceStatus: formatStatus(baseInvoice.invoiceStatus || previewData.status || ""),
+      invoiceNumber: pickFirst(baseInvoice.invoiceNumber || previewData.invoiceNumber || ""),
+      ownerName: pickFirst(baseInvoice.ownerName || ""),
+      amountLabel: formatAmount(
+        baseInvoice.amount,
+        baseInvoice.currencyCode || previewData.currencyCode,
+        baseInvoice.currencySymbol || previewData.currencySymbol
+      ),
+      accountName: pickFirst(baseInvoice.accountName || previewData.accountName || ""),
+      contractName,
+      hub,
+      program,
+      issueDateLabel: formatDate(
+        previewData.issueDate || baseInvoice.issueDate || baseInvoice.invoiceDate
+      ),
+      dueDateLabel: formatDate(previewData.dueDate || baseInvoice.dueDate),
+      hoursLabel: formatHours(quantityHours),
+    };
+  }
+
   async function onDownloadZip() {
     const JSZipCtor = window.JSZip;
     if (!JSZipCtor) {
@@ -4914,11 +5053,24 @@
             if (cachedPdfDataUrl) {
               nativePdfBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
             }
-            if (!looksLikePdfBytes(nativePdfBytes)) {
+            const needsSummaryBackfill =
+              !pickFirst(invoice.hub) ||
+              !pickFirst(invoice.program) ||
+              Number(invoice.quantityHours || 0) <= 0;
+            if (needsSummaryBackfill && !preview) {
               try {
                 preview = await fetchInvoicePreviewFromServerAction(invoice);
               } catch (_error) {
                 preview = null;
+              }
+            }
+            if (!looksLikePdfBytes(nativePdfBytes)) {
+              if (!preview) {
+                try {
+                  preview = await fetchInvoicePreviewFromServerAction(invoice);
+                } catch (_error) {
+                  preview = null;
+                }
               }
               const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
                 pdfDataUrl:
@@ -4958,6 +5110,7 @@
           return {
             invoice,
             pdfBytesToWrite,
+            summary: resolveInvoiceExportSummary(invoice, preview),
             error: invoiceError,
           };
         }
@@ -4970,18 +5123,20 @@
           appendLog("PDF_PREVIEW_FAILED", "Skipped invoice export due to unexpected processing error.");
           return;
         }
+        const summary =
+          (result && result.summary) || resolveInvoiceExportSummary(invoice, null);
         csvRows.push([
-          formatStatus(invoice.invoiceStatus),
-          invoice.invoiceNumber,
-          invoice.ownerName || "",
-          formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
-          invoice.accountName,
-          invoice.contractName || "",
-          invoice.hub || "",
-          invoice.program || "",
-          formatDate(invoice.issueDate || invoice.invoiceDate),
-          formatDate(invoice.dueDate),
-          formatHours(invoice.quantityHours),
+          summary.invoiceStatus,
+          summary.invoiceNumber,
+          summary.ownerName,
+          summary.amountLabel,
+          summary.accountName,
+          summary.contractName,
+          summary.hub,
+          summary.program,
+          summary.issueDateLabel,
+          summary.dueDateLabel,
+          summary.hoursLabel,
         ]);
         if (result.pdfBytesToWrite) {
           zip.file(

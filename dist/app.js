@@ -15,6 +15,7 @@
   ];
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "In Review"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
+  const PREVIEW_FETCH_TIMEOUT_MS = 18000;
   const FIELD_ALIAS_GROUPS = {
     accountName: ["account"],
     createdBy: ["created by", "createdby", "creator"],
@@ -3922,27 +3923,57 @@
         return;
       }
       const preview =
-        (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
-      const generatedPdfDataUrl =
+        (cached && cached.preview) ||
+        (await withTimeout(
+          fetchInvoicePreviewFromServerAction(invoice),
+          PREVIEW_FETCH_TIMEOUT_MS,
+          "Preview request timed out"
+        ).catch(() => null));
+      const previewPdfDataUrl =
         preview && typeof preview === "object" ? normalizePreviewPdfDataUrl(preview) : "";
-      const generatedPdfBytes = generatedPdfDataUrl
-        ? pdfDataUrlToBytes(generatedPdfDataUrl)
-        : null;
+      const previewPdfBytes = previewPdfDataUrl ? pdfDataUrlToBytes(previewPdfDataUrl) : null;
       if (
-        generatedPdfDataUrl &&
-        (looksLikePdfBytes(generatedPdfBytes) ||
-          generatedPdfDataUrl.startsWith("data:application/pdf"))
+        previewPdfDataUrl &&
+        (looksLikePdfBytes(previewPdfBytes) ||
+          previewPdfDataUrl.startsWith("data:application/pdf"))
       ) {
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,
-            pdfDataUrl: generatedPdfDataUrl,
+            pdfDataUrl: previewPdfDataUrl,
             isNativePdf: true,
           };
         }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(generatedPdfDataUrl);
+        setModalPdfFrameSrc(previewPdfDataUrl);
+        return;
+      }
+      const nativePdfBytes = await withTimeout(
+        fetchNativeInvoicePdfBytes(invoice),
+        PREVIEW_FETCH_TIMEOUT_MS,
+        "Native invoice PDF request timed out"
+      ).catch(() => null);
+      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: preview || null,
+            pdfDataUrl: "",
+            isNativePdf: true,
+          };
+        }
+        return;
+      }
+      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, preview || null);
+      const fallbackPdfBytes = pdfDataUrlToBytes(fallbackPdfDataUrl);
+      if (
+        fallbackPdfDataUrl &&
+        (looksLikePdfBytes(fallbackPdfBytes) ||
+          fallbackPdfDataUrl.startsWith("data:application/pdf"))
+      ) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(fallbackPdfDataUrl);
         return;
       }
       refs.modalPdfFrame.classList.add("hidden");
@@ -3954,6 +3985,16 @@
         "Unable to load native invoice PDF preview right now."
       );
     } catch (_error) {
+      const fallbackPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, null);
+      if (
+        fallbackPdfDataUrl &&
+        fallbackPdfDataUrl.startsWith("data:application/pdf")
+      ) {
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(fallbackPdfDataUrl);
+        return;
+      }
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
@@ -4311,8 +4352,17 @@
     return "data:application/pdf;base64," + window.btoa(pdf);
   }
 
+  function safeCreateInvoicePdfDataUrl(invoice, preview) {
+    try {
+      return createInvoicePdfDataUrl(invoice, preview);
+    } catch (_error) {
+      return SAMPLE_PDF_DATA_URL;
+    }
+  }
+
   function escapePdfText(value) {
     return String(value || "")
+      .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?")
       .replace(/\\/g, "\\\\")
       .replace(/\(/g, "\\(")
       .replace(/\)/g, "\\)");
@@ -4655,6 +4705,26 @@
       .replace(/>/g, "&gt;")
       .replace(/\"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  async function withTimeout(promise, timeoutMs, label) {
+    const duration = Number(timeoutMs || 0);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return promise;
+    }
+    let timer = 0;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = window.setTimeout(() => {
+        reject(new Error(String(label || "Timed out")));
+      }, duration);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    }
   }
 
   async function mapWithConcurrency(items, concurrency, mapper) {

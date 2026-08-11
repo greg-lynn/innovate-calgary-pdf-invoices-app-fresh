@@ -105,7 +105,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-native-session-fetch-20260811c";
+  window.__invoiceAccessBuild = "preview-server-pdf-fallback-20260811d";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1436,11 +1436,6 @@
       normalized += "=".repeat(4 - padding);
     }
     return `data:application/pdf;base64,${normalized}`;
-  }
-
-  function isGeneratedPdfSource(value) {
-    const source = String(value || "").toLowerCase();
-    return source.includes("generate");
   }
 
   function hasPreviewPdfDataUrl(preview) {
@@ -3944,30 +3939,22 @@
         pdfDataUrl: invoice && invoice.previewPdfDataUrl,
         pdfBase64: invoice && invoice.previewPdfBase64,
       });
-      const preloadedPdfSource = pickFirst(invoice && invoice.previewPdfSource);
-      let deferredPdfDataUrl = "";
-      let deferredPdfSource = "";
       if (preloadedPdfDataUrl) {
-        if (isGeneratedPdfSource(preloadedPdfSource)) {
-          deferredPdfDataUrl = preloadedPdfDataUrl;
-          deferredPdfSource = preloadedPdfSource;
-        } else {
-          setPreviewDebugState("preloaded-non-generated", {
-            invoiceNumber: invoice.invoiceNumber || "",
-            previewPdfSource: preloadedPdfSource || "",
-          });
-          if (cacheKey) {
-            state.invoicePreviewCache[cacheKey] = {
-              preview: cached && cached.preview ? cached.preview : null,
-              pdfDataUrl: preloadedPdfDataUrl,
-              isNativePdf: true,
-            };
-          }
-          refs.modalPdfFrame.classList.remove("hidden");
-          refs.modalInvoicePreview.classList.add("hidden");
-          setModalPdfFrameSrc(preloadedPdfDataUrl);
-          return;
+        setPreviewDebugState("preloaded-preview-pdf", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(invoice && invoice.previewPdfSource),
+        });
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: cached && cached.preview ? cached.preview : null,
+            pdfDataUrl: preloadedPdfDataUrl,
+            isNativePdf: true,
+          };
         }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(preloadedPdfDataUrl);
+        return;
       }
       const preview =
         (cached && cached.preview) ||
@@ -3984,10 +3971,9 @@
       if (
         previewPdfDataUrl &&
         (looksLikePdfBytes(previewPdfBytes) ||
-          previewPdfDataUrl.startsWith("data:application/pdf")) &&
-        !isGeneratedPdfSource(previewPdfSource)
+          previewPdfDataUrl.startsWith("data:application/pdf"))
       ) {
-        setPreviewDebugState("server-preview-non-generated", {
+        setPreviewDebugState("server-preview-pdf", {
           invoiceNumber: invoice.invoiceNumber || "",
           previewPdfSource: previewPdfSource || "",
         });
@@ -4002,15 +3988,6 @@
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(previewPdfDataUrl);
         return;
-      }
-      if (
-        previewPdfDataUrl &&
-        (looksLikePdfBytes(previewPdfBytes) ||
-          previewPdfDataUrl.startsWith("data:application/pdf")) &&
-        isGeneratedPdfSource(previewPdfSource)
-      ) {
-        deferredPdfDataUrl = previewPdfDataUrl;
-        deferredPdfSource = previewPdfSource;
       }
       const resolvedPreviewInvoiceId = pickFirst(
         preview &&
@@ -4057,19 +4034,6 @@
           setModalPdfFrameSrc(resolvedPreviewPdfDataUrl);
           return;
         }
-        const resolvedPreviewPdfSource =
-          resolvedPreview && typeof resolvedPreview === "object"
-            ? pickFirst(resolvedPreview.pdfSource)
-            : "";
-        if (
-          resolvedPreviewPdfDataUrl &&
-          (looksLikePdfBytes(resolvedPreviewPdfBytes) ||
-            resolvedPreviewPdfDataUrl.startsWith("data:application/pdf")) &&
-          isGeneratedPdfSource(resolvedPreviewPdfSource)
-        ) {
-          deferredPdfDataUrl = resolvedPreviewPdfDataUrl;
-          deferredPdfSource = resolvedPreviewPdfSource;
-        }
         if (resolvedPreview && typeof resolvedPreview === "object") {
           previewForFallback = resolvedPreview;
           nativePreviewInvoiceId =
@@ -4101,14 +4065,6 @@
         }
         return;
       }
-      if (deferredPdfDataUrl) {
-        appendLog(
-          "PDF_PREVIEW_FAILED",
-          "Generated preview source was skipped for invoice " +
-            (invoice.invoiceNumber || invoice.id || "unknown") +
-            " to avoid non-native rendering."
-        );
-      }
       appendLog(
         "PDF_PREVIEW_FAILED",
         "Native preview unavailable for invoice " +
@@ -4117,7 +4073,7 @@
       );
       setPreviewDebugState("native-unavailable", {
         invoiceNumber: invoice.invoiceNumber || "",
-        deferredPdfSource: deferredPdfSource || "",
+        previewPdfSource: previewPdfSource || "",
       });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");

@@ -106,7 +106,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-direct-generate-fallback-20260811g";
+  window.__invoiceAccessBuild = "preview-server-pdf-only-20260811h";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1507,6 +1507,61 @@
     }
     const withPdf = candidates.find((candidate) => hasPreviewPdfDataUrl(candidate));
     return withPdf || candidates[0] || null;
+  }
+
+  function extractPreviewPdfOnlyFromPayload(payload) {
+    const queue = [payload];
+    const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current || typeof current !== "object") {
+        continue;
+      }
+      if (visited) {
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+      }
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i += 1) {
+          queue.push(current[i]);
+        }
+        continue;
+      }
+      if (current.previewPdf && typeof current.previewPdf === "object") {
+        queue.push(current.previewPdf);
+      }
+      if (
+        typeof current.pdfDataUrl === "string" ||
+        typeof current.pdfBase64 === "string"
+      ) {
+        const pdfDataUrl = normalizePreviewPdfDataUrl(current);
+        if (pdfDataUrl) {
+          return {
+            invoiceId: pickFirst(current.invoiceId || current.id || ""),
+            pdfDataUrl,
+            pdfBase64: pickFirst(current.pdfBase64 || ""),
+            pdfSource: pickFirst(current.pdfSource || ""),
+          };
+        }
+      }
+      const nested = [
+        current.data,
+        current.response,
+        current.result,
+        current.payload,
+        current.body,
+        current.item,
+        current.value,
+      ];
+      for (let i = 0; i < nested.length; i += 1) {
+        if (nested[i] && typeof nested[i] === "object") {
+          queue.push(nested[i]);
+        }
+      }
+    }
+    return null;
   }
 
   async function fetchInvoicesFromSourceProjects() {
@@ -4078,44 +4133,10 @@
         setModalPdfFrameSrc(serverPdfOnlyDataUrl);
         return;
       }
-      const nativePdfBytes = await withTimeout(
-        fetchNativeInvoicePdfBytes(
-          mergeObjects(invoice || {}, {
-            invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-          })
-        ),
-        PREVIEW_FETCH_TIMEOUT_MS,
-        "Native invoice PDF request timed out"
-      ).catch(() => null);
-      if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
-        setPreviewDebugState("native-session-fetch", {
-          invoiceNumber: invoice.invoiceNumber || "",
-          resolvedInvoiceId: nativePreviewInvoiceId || "",
-        });
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: previewForFallback || null,
-            pdfDataUrl: "",
-            isNativePdf: true,
-          };
-        }
-        return;
-      }
-      const directGenerateUrl = resolveDirectServerGenerateUrl(
-        mergeObjects(invoice || {}, {
-          invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-        })
-      );
-      if (directGenerateUrl) {
-        setPreviewDebugState("direct-generate-url", {
-          invoiceNumber: invoice.invoiceNumber || "",
-          directGenerateUrl,
-        });
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(directGenerateUrl);
-        return;
-      }
+      setPreviewDebugState("server-pdf-only-miss", {
+        invoiceNumber: invoice.invoiceNumber || "",
+        resolvedInvoiceId: nativePreviewInvoiceId || "",
+      });
       appendLog(
         "PDF_PREVIEW_FAILED",
         "Native preview unavailable for invoice " +
@@ -4832,13 +4853,27 @@
           workspaceBaseUrl,
         },
       });
+      const directPdf = extractPreviewPdfOnlyFromPayload(payload);
+      if (directPdf && directPdf.pdfDataUrl) {
+        return directPdf;
+      }
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          outcome: "server-pdf-only-result-error",
+          error: result && result.error ? String(result.error) : "",
+        });
         return null;
       }
       const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : {};
       const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);
       if (!pdfDataUrl) {
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          outcome: "server-pdf-only-no-pdf",
+          diagnostics: result && result.diagnostics ? result.diagnostics : null,
+        });
         return null;
       }
       return {
@@ -4848,6 +4883,11 @@
         pdfSource: pickFirst(previewPdf.pdfSource || ""),
       };
     } catch (_error) {
+      setPreviewProbe({
+        invoiceId: previewInvoiceId || "",
+        outcome: "server-pdf-only-throw",
+        error: simplifyError(_error),
+      });
       return null;
     }
   }

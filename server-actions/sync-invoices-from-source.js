@@ -2692,6 +2692,7 @@ module.exports = {
     let resolvedViewer = viewer;
 
     if (isPreviewRequest) {
+      let previewFallbackResponse = null;
       for (let i = 0; i < apiBaseCandidates.length; i += 1) {
         const baseUrl = apiBaseCandidates[i];
         try {
@@ -2775,12 +2776,7 @@ module.exports = {
                 preview.pdfBase64 = previewPdf.pdfBase64 || "";
                 preview.pdfSource = previewPdf.pdfSource;
               }
-              if (
-                preview.pdfDataUrl ||
-                lineItems.length ||
-                payments.length ||
-                Object.keys(invoiceRecord).length
-              ) {
+              if (preview.pdfDataUrl) {
                 return {
                   ok: true,
                   preview,
@@ -2789,6 +2785,22 @@ module.exports = {
                     apiBaseUsed: baseUrl,
                     previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
                     previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                  }),
+                };
+              }
+              if (
+                !previewFallbackResponse &&
+                (lineItems.length || payments.length || Object.keys(invoiceRecord).length)
+              ) {
+                previewFallbackResponse = {
+                  ok: true,
+                  preview,
+                  viewer,
+                  diagnostics: mergeObjects(diagnostics, {
+                    apiBaseUsed: baseUrl,
+                    previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
+                    previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                    previewPdfUnavailable: true,
                   }),
                 };
               }
@@ -2811,6 +2823,9 @@ module.exports = {
             String(error && error.message ? error.message : error)
           );
         }
+      }
+      if (previewFallbackResponse) {
+        return previewFallbackResponse;
       }
       return {
         ok: false,

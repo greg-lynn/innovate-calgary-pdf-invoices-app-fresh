@@ -105,11 +105,12 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-direct-native-priority-20260811b";
+  window.__invoiceAccessBuild = "preview-native-session-fetch-20260811c";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
     access: state.access,
+    previewLast: null,
   };
 
   const refs = {};
@@ -3606,6 +3607,32 @@
     return true;
   }
 
+  function setPreviewDebugState(stateName, details) {
+    try {
+      window.__invoiceAccessDebug = mergeObjects(window.__invoiceAccessDebug || {}, {
+        previewLast: mergeObjects(
+          {
+            state: String(stateName || ""),
+            at: new Date().toISOString(),
+          },
+          details || {}
+        ),
+      });
+    } catch (_error) {
+      // Ignore debug state errors.
+    }
+  }
+
+  function setPreviewProbe(details) {
+    try {
+      window.__invoiceAccessDebug = mergeObjects(window.__invoiceAccessDebug || {}, {
+        previewProbe: details || null,
+      });
+    } catch (_error) {
+      // Ignore debug probe errors.
+    }
+  }
+
   function renderSearchInsight() {
     if (!refs.searchInsight) {
       return;
@@ -3905,6 +3932,9 @@
     try {
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
+        setPreviewDebugState("cache-pdf-data-url", {
+          invoiceNumber: invoice.invoiceNumber || "",
+        });
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(cached.pdfDataUrl);
@@ -3922,6 +3952,10 @@
           deferredPdfDataUrl = preloadedPdfDataUrl;
           deferredPdfSource = preloadedPdfSource;
         } else {
+          setPreviewDebugState("preloaded-non-generated", {
+            invoiceNumber: invoice.invoiceNumber || "",
+            previewPdfSource: preloadedPdfSource || "",
+          });
           if (cacheKey) {
             state.invoicePreviewCache[cacheKey] = {
               preview: cached && cached.preview ? cached.preview : null,
@@ -3953,6 +3987,10 @@
           previewPdfDataUrl.startsWith("data:application/pdf")) &&
         !isGeneratedPdfSource(previewPdfSource)
       ) {
+        setPreviewDebugState("server-preview-non-generated", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          previewPdfSource: previewPdfSource || "",
+        });
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: preview || null,
@@ -4000,6 +4038,13 @@
           (looksLikePdfBytes(resolvedPreviewPdfBytes) ||
             resolvedPreviewPdfDataUrl.startsWith("data:application/pdf"))
         ) {
+          setPreviewDebugState("resolved-server-preview", {
+            invoiceNumber: invoice.invoiceNumber || "",
+            previewPdfSource:
+              (resolvedPreview && typeof resolvedPreview === "object"
+                ? pickFirst(resolvedPreview.pdfSource)
+                : "") || "",
+          });
           if (cacheKey) {
             state.invoicePreviewCache[cacheKey] = {
               preview: resolvedPreview || null,
@@ -4042,25 +4087,11 @@
         PREVIEW_FETCH_TIMEOUT_MS,
         "Native invoice PDF request timed out"
       ).catch(() => null);
-      const directPreviewUrl = resolveNativeInvoiceDownloadUrl(
-        mergeObjects(invoice || {}, {
-          invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-        })
-      );
-      if (directPreviewUrl) {
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: previewForFallback || null,
-            pdfDataUrl: directPreviewUrl,
-            isNativePdf: true,
-          };
-        }
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(directPreviewUrl);
-        return;
-      }
       if (looksLikePdfBytes(nativePdfBytes) && setModalPdfFrameFromBytes(nativePdfBytes)) {
+        setPreviewDebugState("native-session-fetch", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          resolvedInvoiceId: nativePreviewInvoiceId || "",
+        });
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: previewForFallback || null,
@@ -4071,17 +4102,12 @@
         return;
       }
       if (deferredPdfDataUrl) {
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: previewForFallback || null,
-            pdfDataUrl: deferredPdfDataUrl,
-            isNativePdf: true,
-          };
-        }
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(deferredPdfDataUrl);
-        return;
+        appendLog(
+          "PDF_PREVIEW_FAILED",
+          "Generated preview source was skipped for invoice " +
+            (invoice.invoiceNumber || invoice.id || "unknown") +
+            " to avoid non-native rendering."
+        );
       }
       appendLog(
         "PDF_PREVIEW_FAILED",
@@ -4089,6 +4115,10 @@
           (invoice.invoiceNumber || invoice.id || "unknown") +
           ". Fallback rendering is disabled to prevent mock invoice previews."
       );
+      setPreviewDebugState("native-unavailable", {
+        invoiceNumber: invoice.invoiceNumber || "",
+        deferredPdfSource: deferredPdfSource || "",
+      });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
@@ -4103,6 +4133,10 @@
         "Native preview failed for invoice " + (invoice.invoiceNumber || invoice.id || "unknown") + ".",
         _error
       );
+      setPreviewDebugState("native-failed", {
+        invoiceNumber: invoice.invoiceNumber || "",
+        error: simplifyError(_error),
+      });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
@@ -4199,8 +4233,6 @@
       `${normalizedBase}/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/api/1.0/invoices/${encodedId}/attachments/download`,
-      `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
-      `${normalizedBase}/api/1.0/invoices/${encodedId}/generate`,
       resolveNativeInvoiceDownloadUrl(invoice),
     ]);
   }
@@ -4236,22 +4268,30 @@
 
   async function fetchNativeInvoicePdfBytes(invoice) {
     const candidateUrls = resolveNativeInvoicePdfUrlCandidates(invoice);
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    const attempts = [];
     if (!candidateUrls.length) {
+      setPreviewProbe({
+        invoiceId,
+        outcome: "no-candidates",
+        attempts,
+      });
       return null;
     }
     for (let i = 0; i < candidateUrls.length; i += 1) {
       const nativeDownloadUrl = candidateUrls[i];
       try {
-        let response = await fetch(nativeDownloadUrl, {
+        const response = await fetch(nativeDownloadUrl, {
           method: "GET",
           credentials: "include",
         });
-        if (!response.ok && /\/generate(\?|$)/i.test(nativeDownloadUrl)) {
-          response = await fetch(nativeDownloadUrl, {
-            method: "POST",
-            credentials: "include",
-          });
-        }
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+        attempts.push({
+          url: nativeDownloadUrl,
+          method: "GET",
+          status: Number(response.status || 0),
+          contentType,
+        });
         if (!response.ok) {
           continue;
         }
@@ -4261,18 +4301,42 @@
         }
         const bytes = new Uint8Array(buffer);
         if (looksLikePdfBytes(bytes)) {
+          setPreviewProbe({
+            invoiceId,
+            outcome: "pdf",
+            selectedUrl: nativeDownloadUrl,
+            selectedMethod: "GET",
+            attempts,
+          });
           return bytes;
         }
         if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
           const pdfFromZip = await tryExtractPdfBytesFromZip(buffer);
           if (looksLikePdfBytes(pdfFromZip)) {
+            setPreviewProbe({
+              invoiceId,
+              outcome: "pdf-from-zip",
+              selectedUrl: nativeDownloadUrl,
+              selectedMethod: "GET",
+              attempts,
+            });
             return pdfFromZip;
           }
         }
       } catch (_error) {
+        attempts.push({
+          url: nativeDownloadUrl,
+          method: "GET",
+          error: simplifyError(_error),
+        });
         // Keep trying the next candidate endpoint.
       }
     }
+    setPreviewProbe({
+      invoiceId,
+      outcome: "exhausted",
+      attempts,
+    });
     return null;
   }
 

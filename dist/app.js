@@ -106,7 +106,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-server-pdf-only-20260811h";
+  window.__invoiceAccessBuild = "preview-server-workspace-fallback-20260811i";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1368,6 +1368,19 @@
     }
   }
 
+  function tryParseJsonObject(value) {
+    const text = String(value || "").trim();
+    if (!text || (text[0] !== "{" && text[0] !== "[")) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function unwrapServerActionResponse(payload) {
     let current = payload;
     for (let i = 0; i < 6; i += 1) {
@@ -1377,6 +1390,14 @@
       if (Array.isArray(current)) {
         return { ok: true, invoices: current };
       }
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (!parsed) {
+          return null;
+        }
+        current = parsed;
+        continue;
+      }
       if (typeof current !== "object") {
         return null;
       }
@@ -1384,6 +1405,7 @@
         current.ok !== undefined ||
         current.error ||
         current.preview ||
+        current.previewPdf ||
         current.invoices ||
         current.sourceProjects ||
         current.teamMembers
@@ -1420,24 +1442,67 @@
     return prefix + encoded;
   }
 
+  function normalizeBase64PdfPayload(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+    let encoded = raw.replace(/^data:application\/pdf[^,]*,/i, "").replace(/\s+/g, "");
+    encoded = encoded.replace(/-/g, "+").replace(/_/g, "/").replace(/ /g, "+");
+    if (!encoded || encoded.length < 80 || !/^[A-Za-z0-9+/=]+$/.test(encoded)) {
+      return "";
+    }
+    const padding = encoded.length % 4;
+    if (padding) {
+      encoded += "=".repeat(4 - padding);
+    }
+    return /^JVBER/i.test(encoded) ? encoded : "";
+  }
+
   function normalizePreviewPdfDataUrl(preview) {
-    if (!preview || typeof preview !== "object") {
+    if (!preview) {
+      return "";
+    }
+    if (typeof preview === "string") {
+      const directString = normalizePdfDataUrl(preview);
+      if (directString) {
+        return directString;
+      }
+      const parsedString = tryParseJsonObject(preview);
+      if (parsedString) {
+        return normalizePreviewPdfDataUrl(parsedString);
+      }
+      const base64String = normalizeBase64PdfPayload(preview);
+      return base64String ? `data:application/pdf;base64,${base64String}` : "";
+    }
+    if (typeof preview !== "object") {
       return "";
     }
     const direct = normalizePdfDataUrl(preview.pdfDataUrl);
     if (direct) {
       return direct;
     }
-    const base64 = String(preview.pdfBase64 || "").replace(/\s+/g, "").trim();
+    const fallbackDirect = normalizePdfDataUrl(
+      preview.dataUrl || preview.fileDataUrl || preview.documentDataUrl
+    );
+    if (fallbackDirect) {
+      return fallbackDirect;
+    }
+    const base64 = normalizeBase64PdfPayload(
+      preview.pdfBase64 ||
+        preview.base64 ||
+        preview.fileBase64 ||
+        preview.documentBase64 ||
+        preview.pdf ||
+        preview.data
+    );
     if (!base64) {
+      if (preview.previewPdf && typeof preview.previewPdf === "object") {
+        return normalizePreviewPdfDataUrl(preview.previewPdf);
+      }
       return "";
     }
-    let normalized = base64.replace(/-/g, "+").replace(/_/g, "/").replace(/ /g, "+");
-    const padding = normalized.length % 4;
-    if (padding) {
-      normalized += "=".repeat(4 - padding);
-    }
-    return `data:application/pdf;base64,${normalized}`;
+    return `data:application/pdf;base64,${base64}`;
   }
 
   function hasPreviewPdfDataUrl(preview) {
@@ -1514,6 +1579,23 @@
     const visited = typeof WeakSet === "function" ? new WeakSet() : null;
     while (queue.length) {
       const current = queue.shift();
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (parsed) {
+          queue.push(parsed);
+          continue;
+        }
+        const stringPdfDataUrl = normalizePreviewPdfDataUrl(current);
+        if (stringPdfDataUrl) {
+          return {
+            invoiceId: "",
+            pdfDataUrl: stringPdfDataUrl,
+            pdfBase64: "",
+            pdfSource: "string-payload",
+          };
+        }
+        continue;
+      }
       if (!current || typeof current !== "object") {
         continue;
       }
@@ -1529,22 +1611,23 @@
         }
         continue;
       }
+      if (typeof current.previewPdf === "string") {
+        queue.push(current.previewPdf);
+      }
+      if (typeof current.preview === "string") {
+        queue.push(current.preview);
+      }
       if (current.previewPdf && typeof current.previewPdf === "object") {
         queue.push(current.previewPdf);
       }
-      if (
-        typeof current.pdfDataUrl === "string" ||
-        typeof current.pdfBase64 === "string"
-      ) {
-        const pdfDataUrl = normalizePreviewPdfDataUrl(current);
-        if (pdfDataUrl) {
-          return {
-            invoiceId: pickFirst(current.invoiceId || current.id || ""),
-            pdfDataUrl,
-            pdfBase64: pickFirst(current.pdfBase64 || ""),
-            pdfSource: pickFirst(current.pdfSource || ""),
-          };
-        }
+      const pdfDataUrl = normalizePreviewPdfDataUrl(current);
+      if (pdfDataUrl) {
+        return {
+          invoiceId: pickFirst(current.invoiceId || current.id || ""),
+          pdfDataUrl,
+          pdfBase64: pickFirst(current.pdfBase64 || current.base64 || ""),
+          pdfSource: pickFirst(current.pdfSource || ""),
+        };
       }
       const nested = [
         current.data,
@@ -4674,7 +4757,6 @@
       requestMode: "preview",
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
-      apiBaseUrl: SERVER_ACTION_API_BASE_URL,
       workspaceBaseUrl,
       workspaceCandidates,
       invoiceId: previewInvoiceId,
@@ -4831,7 +4913,6 @@
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
-        apiBaseUrl: SERVER_ACTION_API_BASE_URL,
         workspaceBaseUrl,
         workspaceCandidates,
         invoiceId: previewInvoiceId,

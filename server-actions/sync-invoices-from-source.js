@@ -2636,6 +2636,15 @@ module.exports = {
       iParams.apiBaseUrl,
       ROCKETLANE_API_BASE_URL,
     ]);
+    const workspaceApiBaseCandidates = dedupeStrings(
+      workspaceCandidatesForFetch
+        .map((candidate) => pickFirst(candidate).replace(/\/+$/, ""))
+        .filter(Boolean)
+    );
+    const previewApiBaseCandidates = dedupeStrings([
+      ...workspaceApiBaseCandidates,
+      ...apiBaseCandidates,
+    ]);
     const normalizedSearchQuery = String(request.searchQuery || "").trim();
 
     if (!apiBaseCandidates.length || !apiToken) {
@@ -2656,6 +2665,7 @@ module.exports = {
 
     const diagnostics = {
       workspaceCandidates: workspaceCandidatesForFetch,
+      previewApiBaseCandidates,
       projectErrors: [],
       invoiceErrors: [],
       memberErrors: [],
@@ -2696,8 +2706,8 @@ module.exports = {
 
     if (isPreviewRequest) {
       if (isPreviewPdfRequest) {
-        for (let i = 0; i < apiBaseCandidates.length; i += 1) {
-          const baseUrl = apiBaseCandidates[i];
+        for (let i = 0; i < previewApiBaseCandidates.length; i += 1) {
+          const baseUrl = previewApiBaseCandidates[i];
           try {
             const resolvedInvoiceId = await resolveInvoiceIdForPreview(
               baseUrl,
@@ -2752,8 +2762,8 @@ module.exports = {
         };
       }
       let previewFallbackResponse = null;
-      for (let i = 0; i < apiBaseCandidates.length; i += 1) {
-        const baseUrl = apiBaseCandidates[i];
+      for (let i = 0; i < previewApiBaseCandidates.length; i += 1) {
+        const baseUrl = previewApiBaseCandidates[i];
         try {
           const resolvedInvoiceId = await resolveInvoiceIdForPreview(
             baseUrl,
@@ -3058,7 +3068,7 @@ module.exports = {
       request.searchOnly !== true && request.prefetchPreviewPdfs === true;
     if (shouldPrefetchPreviewPdfs) {
       await attachPreviewPdfToInvoices(
-        diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
+        previewApiBaseCandidates[0] || diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
         headers,
         dedupedInvoices,
         diagnostics

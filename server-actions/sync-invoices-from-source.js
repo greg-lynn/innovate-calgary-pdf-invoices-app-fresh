@@ -947,14 +947,9 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
   const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
   const pdfPaths = [
     {
-      path: `/api/v1/invoices/${encodedId}/generate`,
-      source: "api-v1-generate",
-      methods: ["GET", "POST"],
-    },
-    {
-      path: `/api/1.0/invoices/${encodedId}/generate`,
-      source: "api-1-generate",
-      methods: ["GET", "POST"],
+      path: `/invoices/${encodedId}/attachments/download`,
+      source: "web-attachments-download",
+      methods: ["GET"],
     },
     {
       path: `/api/v1/invoices/${encodedId}/attachments/download`,
@@ -967,9 +962,14 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
       methods: ["GET"],
     },
     {
-      path: `/invoices/${encodedId}/attachments/download`,
-      source: "web-attachments-download",
-      methods: ["GET"],
+      path: `/api/v1/invoices/${encodedId}/generate`,
+      source: "api-v1-generate",
+      methods: ["GET", "POST"],
+    },
+    {
+      path: `/api/1.0/invoices/${encodedId}/generate`,
+      source: "api-1-generate",
+      methods: ["GET", "POST"],
     },
   ];
   for (let i = 0; i < pdfPaths.length; i += 1) {

@@ -2679,8 +2679,11 @@ module.exports = {
         request.invoiceNumber ||
         (request.preview && request.preview.invoiceNumber)
     );
+    const requestMode = String(request.requestMode || request.mode || "").toLowerCase();
+    const isPreviewPdfRequest = requestMode === "preview-pdf";
     const isPreviewRequest =
-      String(request.requestMode || request.mode || "").toLowerCase() === "preview" ||
+      requestMode === "preview" ||
+      isPreviewPdfRequest ||
       Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested);
     diagnostics.previewRequest = {
       isPreviewRequest,
@@ -2692,6 +2695,62 @@ module.exports = {
     let resolvedViewer = viewer;
 
     if (isPreviewRequest) {
+      if (isPreviewPdfRequest) {
+        for (let i = 0; i < apiBaseCandidates.length; i += 1) {
+          const baseUrl = apiBaseCandidates[i];
+          try {
+            const resolvedInvoiceId = await resolveInvoiceIdForPreview(
+              baseUrl,
+              headers,
+              previewInvoiceIdRequested,
+              previewInvoiceNumberRequested,
+              request.previewSourceProjectId
+            );
+            const previewInvoiceIds = dedupeStrings([
+              pickFirst(resolvedInvoiceId),
+              previewInvoiceIdRequested,
+            ])
+              .map((value) => encodeURIComponent(String(value || "").trim()))
+              .filter(Boolean);
+            if (!previewInvoiceIds.length) {
+              throw new Error("Invoice ID could not be resolved for preview PDF.");
+            }
+            for (let candidateIdx = 0; candidateIdx < previewInvoiceIds.length; candidateIdx += 1) {
+              const previewInvoiceId = previewInvoiceIds[candidateIdx];
+              const previewPdf = await fetchPreviewPdfData(baseUrl, headers, previewInvoiceId);
+              if (previewPdf && previewPdf.pdfDataUrl) {
+                return {
+                  ok: true,
+                  previewPdf: {
+                    invoiceId: decodeURIComponent(previewInvoiceId),
+                    pdfDataUrl: previewPdf.pdfDataUrl,
+                    pdfBase64: previewPdf.pdfBase64 || "",
+                    pdfSource: previewPdf.pdfSource || "",
+                  },
+                  viewer,
+                  diagnostics: mergeObjects(diagnostics, {
+                    apiBaseUsed: baseUrl,
+                    previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
+                    previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                    previewPdfRequest: true,
+                  }),
+                };
+              }
+            }
+          } catch (error) {
+            diagnostics.invoiceErrors.push(
+              String(error && error.message ? error.message : error)
+            );
+          }
+        }
+        return {
+          ok: false,
+          error: "Unable to load invoice preview PDF.",
+          previewPdf: null,
+          viewer,
+          diagnostics,
+        };
+      }
       let previewFallbackResponse = null;
       for (let i = 0; i < apiBaseCandidates.length; i += 1) {
         const baseUrl = apiBaseCandidates[i];

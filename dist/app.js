@@ -106,7 +106,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-server-pdf-fallback-20260811e";
+  window.__invoiceAccessBuild = "preview-server-pdf-fallback-20260811f";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4044,6 +4044,40 @@
             ) || nativePreviewInvoiceId;
         }
       }
+      const serverPdfOnlyPreview = await withTimeout(
+        fetchInvoicePreviewPdfOnlyFromServerAction(
+          mergeObjects(invoice || {}, {
+            invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
+          })
+        ),
+        PREVIEW_FETCH_TIMEOUT_MS,
+        "Server preview PDF request timed out"
+      ).catch(() => null);
+      const serverPdfOnlyDataUrl = normalizePreviewPdfDataUrl(serverPdfOnlyPreview || {});
+      const serverPdfOnlyBytes = serverPdfOnlyDataUrl
+        ? pdfDataUrlToBytes(serverPdfOnlyDataUrl)
+        : null;
+      if (
+        serverPdfOnlyDataUrl &&
+        (looksLikePdfBytes(serverPdfOnlyBytes) ||
+          serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
+      ) {
+        setPreviewDebugState("server-pdf-only", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
+        });
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: previewForFallback || null,
+            pdfDataUrl: serverPdfOnlyDataUrl,
+            isNativePdf: true,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(serverPdfOnlyDataUrl);
+        return;
+      }
       const nativePdfBytes = await withTimeout(
         fetchNativeInvoicePdfBytes(
           mergeObjects(invoice || {}, {
@@ -4724,6 +4758,69 @@
       previewInvokeAttempts: attemptDiagnostics,
     });
     return fallbackPreview;
+  }
+
+  async function fetchInvoicePreviewPdfOnlyFromServerAction(invoice) {
+    if (
+      !state.connected ||
+      !state.client ||
+      !state.client.data ||
+      typeof state.client.data.invoke !== "function"
+    ) {
+      return null;
+    }
+    const previewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id || ""));
+    const previewInvoiceNumber = pickFirst(invoice && (invoice.invoiceNumber || ""));
+    if (!previewInvoiceId && !previewInvoiceNumber) {
+      return null;
+    }
+    const workspaceCandidates = getWorkspaceCandidates();
+    const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
+    try {
+      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+        requestMode: "preview-pdf",
+        sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+        accountName: state.context.accountName || "",
+        apiBaseUrl: SERVER_ACTION_API_BASE_URL,
+        workspaceBaseUrl,
+        workspaceCandidates,
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: previewInvoiceNumber,
+        preview: {
+          invoiceId: previewInvoiceId,
+          invoiceNumber: previewInvoiceNumber,
+        },
+        previewSourceProjectId: pickFirst(invoice && invoice.sourceProjectId),
+        viewerContext: {
+          userId: state.context.userId || "",
+          userEmail: state.context.userEmail || "",
+          userRole: state.context.userRole || "",
+          userName: state.context.userName || "",
+          permission:
+            (state.permissionHint && state.permissionHint.permission) ||
+            state.access.permission ||
+            "",
+          workspaceBaseUrl,
+        },
+      });
+      const result = unwrapServerActionResponse(payload);
+      if (!result || result.ok === false) {
+        return null;
+      }
+      const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : {};
+      const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);
+      if (!pdfDataUrl) {
+        return null;
+      }
+      return {
+        invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId),
+        pdfDataUrl,
+        pdfBase64: pickFirst(previewPdf.pdfBase64 || ""),
+        pdfSource: pickFirst(previewPdf.pdfSource || ""),
+      };
+    } catch (_error) {
+      return null;
+    }
   }
 
   function renderInvoicePreviewContent(invoice, preview, isLoading, errorText) {

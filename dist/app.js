@@ -13,6 +13,7 @@
     "expert advisor program invoices",
     "expert advisors program invoices",
   ];
+  const SERVER_ACTION_API_BASE_URL = "https://api.rocketlane.com";
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
   const PREVIEW_FETCH_TIMEOUT_MS = 18000;
@@ -105,7 +106,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-server-pdf-fallback-20260811d";
+  window.__invoiceAccessBuild = "preview-server-pdf-fallback-20260811e";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1256,9 +1257,10 @@
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
+        apiBaseUrl: SERVER_ACTION_API_BASE_URL,
         workspaceBaseUrl,
         workspaceCandidates,
-        prefetchPreviewPdfs: false,
+        prefetchPreviewPdfs: true,
         viewerContext: {
           userId: state.context.userId || "",
           userEmail: state.context.userEmail || "",
@@ -4588,6 +4590,7 @@
       requestMode: "preview",
       sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
       accountName: state.context.accountName || "",
+      apiBaseUrl: SERVER_ACTION_API_BASE_URL,
       workspaceBaseUrl,
       workspaceCandidates,
       invoiceId: previewInvoiceId,

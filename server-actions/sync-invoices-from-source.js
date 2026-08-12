@@ -3616,10 +3616,46 @@ module.exports = {
     const shouldPrefetchPreviewPdfs =
       request.searchOnly !== true && request.prefetchPreviewPdfs === true;
     if (shouldPrefetchPreviewPdfs) {
+      const targetPreviewInvoiceId = pickFirst(
+        request.previewInvoiceId ||
+          request.invoiceId ||
+          (request.preview && request.preview.invoiceId)
+      );
+      const targetPreviewInvoiceNumber = canonicalInvoiceNumber(
+        pickFirst(
+          request.previewInvoiceNumber ||
+            request.invoiceNumberForPreview ||
+            request.invoiceNumber ||
+            (request.preview && request.preview.invoiceNumber)
+        )
+      );
+      let invoicesToPrefetch = dedupedInvoices;
+      if (targetPreviewInvoiceId || targetPreviewInvoiceNumber) {
+        const targeted = dedupedInvoices.filter((invoice) => {
+          const invoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
+          const invoiceNumber = canonicalInvoiceNumber(
+            pickFirst(invoice && invoice.invoiceNumber)
+          );
+          if (targetPreviewInvoiceId && invoiceId && invoiceId === targetPreviewInvoiceId) {
+            return true;
+          }
+          if (
+            targetPreviewInvoiceNumber &&
+            invoiceNumber &&
+            invoiceNumber === targetPreviewInvoiceNumber
+          ) {
+            return true;
+          }
+          return false;
+        });
+        if (targeted.length) {
+          invoicesToPrefetch = targeted;
+        }
+      }
       await attachPreviewPdfToInvoices(
         previewApiBaseCandidates[0] || diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
         headers,
-        dedupedInvoices,
+        invoicesToPrefetch,
         diagnostics
       );
     }

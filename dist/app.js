@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-targeted-invoice-fallback-20260812f";
+  window.__invoiceAccessBuild = "preview-dedicated-action-20260812g";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5051,7 +5051,7 @@
         outcome: "server-pdf-only-start",
       });
       const payload = await state.client.data.invoke(
-        "syncInvoicesFromSource",
+        "syncInvoicePreviewPayload",
         wrapServerActionRequestPayload({
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
@@ -5080,6 +5080,17 @@
       );
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
       if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
+        const directMatchesTarget = invoiceMatchesPreviewTarget(
+          {
+            invoiceId: directPdf.invoiceId,
+            invoiceNumber: previewInvoiceNumber,
+          },
+          previewInvoiceId,
+          previewInvoiceNumber
+        );
+        if (!directMatchesTarget && previewInvoiceId) {
+          // Continue parsing structured payload to avoid rendering the wrong invoice PDF.
+        } else {
         setPreviewProbe({
           invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
           invoiceNumber: previewInvoiceNumber || "",
@@ -5089,6 +5100,7 @@
           hasSignedUrl: Boolean(directPdf.pdfUrl),
         });
         return directPdf;
+        }
       }
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {

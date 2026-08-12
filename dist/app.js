@@ -108,7 +108,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-late-success-recovery-20260812u";
+  window.__invoiceAccessBuild = "zip-pdf-folder-guarantee-20260812v";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5861,10 +5861,18 @@
             if (looksLikePdfBytes(nativePdfBytes)) {
               pdfBytesToWrite = nativePdfBytes;
             } else {
-              const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
+              const generatedPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, preview);
               const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
               if (looksLikePdfBytes(generatedPdfBytes)) {
                 pdfBytesToWrite = generatedPdfBytes;
+              }
+            }
+            if (!looksLikePdfBytes(pdfBytesToWrite)) {
+              const emergencyPdfDataUrl = createEmergencyInvoicePdfDataUrl(invoice);
+              const emergencyPdfBytes = pdfDataUrlToBytes(emergencyPdfDataUrl);
+              if (looksLikePdfBytes(emergencyPdfBytes)) {
+                pdfBytesToWrite = emergencyPdfBytes;
+                invoiceError = invoiceError || "Used emergency PDF fallback for export.";
               }
             }
           } catch (error) {
@@ -5910,12 +5918,26 @@
           summary.dueDateLabel,
           summary.hoursLabel,
         ]);
-        if (result.pdfBytesToWrite) {
+        if (result.pdfBytesToWrite && looksLikePdfBytes(result.pdfBytesToWrite)) {
           zip.file(
             "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
             result.pdfBytesToWrite
           );
           pdfFileCount += 1;
+          return;
+        }
+        const emergencyPdfBytes = pdfDataUrlToBytes(createEmergencyInvoicePdfDataUrl(invoice));
+        if (looksLikePdfBytes(emergencyPdfBytes)) {
+          zip.file(
+            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            emergencyPdfBytes
+          );
+          pdfFileCount += 1;
+          missingPdfCount += 1;
+          appendLog(
+            "PDF_PREVIEW_FAILED",
+            "Used emergency fallback PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+          );
           return;
         }
         missingPdfCount += 1;

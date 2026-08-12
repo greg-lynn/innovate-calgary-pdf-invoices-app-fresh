@@ -107,11 +107,12 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-runtime-http-fallback-20260812b";
+  window.__invoiceAccessBuild = "preview-direct-url-fallback-20260812c";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
     access: state.access,
+    previewProbe: null,
     previewLast: null,
   };
 
@@ -3696,7 +3697,30 @@
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
     setModalPdfFrameSrc("");
-    loadInvoicePreview(invoice);
+    const previewPromise = loadInvoicePreview(invoice);
+    if (previewPromise && typeof previewPromise.catch === "function") {
+      previewPromise.catch((error) => {
+        appendLog(
+          "PDF_PREVIEW_FAILED",
+          "Unhandled preview promise failure for invoice " +
+            (invoice.invoiceNumber || invoice.id || "unknown") +
+            ".",
+          error
+        );
+        setPreviewDebugState("native-failed-unhandled", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          error: simplifyError(error),
+        });
+        refs.modalPdfFrame.classList.add("hidden");
+        refs.modalInvoicePreview.classList.remove("hidden");
+        renderInvoicePreviewContent(
+          invoice,
+          null,
+          false,
+          "Unable to load native invoice preview right now."
+        );
+      });
+    }
   }
 
   function closePdfModal() {
@@ -3762,7 +3786,12 @@
   function setPreviewProbe(details) {
     try {
       window.__invoiceAccessDebug = mergeObjects(window.__invoiceAccessDebug || {}, {
-        previewProbe: details || null,
+        previewProbe: mergeObjects(
+          {
+            at: new Date().toISOString(),
+          },
+          details || null
+        ),
       });
     } catch (_error) {
       // Ignore debug probe errors.
@@ -4064,12 +4093,20 @@
   }
 
   async function loadInvoicePreview(invoice) {
-    const cacheKey = String(invoice.id || invoice.invoiceId || invoice.invoiceNumber || "");
+    const targetInvoice = invoice && typeof invoice === "object" ? invoice : {};
+    const cacheKey = String(
+      targetInvoice.id || targetInvoice.invoiceId || targetInvoice.invoiceNumber || ""
+    );
     try {
+      setPreviewProbe({
+        invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
+        invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
+        outcome: "load-preview-start",
+      });
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
         setPreviewDebugState("cache-pdf-data-url", {
-          invoiceNumber: invoice.invoiceNumber || "",
+          invoiceNumber: targetInvoice.invoiceNumber || "",
         });
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
@@ -4077,13 +4114,13 @@
         return;
       }
       const preloadedPdfDataUrl = normalizePreviewPdfDataUrl({
-        pdfDataUrl: invoice && invoice.previewPdfDataUrl,
-        pdfBase64: invoice && invoice.previewPdfBase64,
+        pdfDataUrl: targetInvoice.previewPdfDataUrl,
+        pdfBase64: targetInvoice.previewPdfBase64,
       });
       if (preloadedPdfDataUrl) {
         setPreviewDebugState("preloaded-preview-pdf", {
-          invoiceNumber: invoice.invoiceNumber || "",
-          previewPdfSource: pickFirst(invoice && invoice.previewPdfSource),
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(targetInvoice.previewPdfSource),
         });
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
@@ -4098,13 +4135,13 @@
         return;
       }
       const serverPdfOnlyPreview = await withTimeout(
-        fetchInvoicePreviewPdfOnlyFromServerAction(invoice),
+        fetchInvoicePreviewPdfOnlyFromServerAction(targetInvoice),
         PREVIEW_PDF_ONLY_TIMEOUT_MS,
         "Server preview PDF request timed out"
       ).catch((error) => {
         setPreviewProbe({
-          invoiceId: pickFirst(invoice && (invoice.invoiceId || invoice.id)) || "",
-          invoiceNumber: pickFirst(invoice && invoice.invoiceNumber) || "",
+          invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
+          invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
           outcome: "server-pdf-only-timeout",
           error: simplifyError(error),
         });
@@ -4120,7 +4157,7 @@
           serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
       ) {
         setPreviewDebugState("server-pdf-only", {
-          invoiceNumber: invoice.invoiceNumber || "",
+          invoiceNumber: targetInvoice.invoiceNumber || "",
           previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
         });
         if (cacheKey) {
@@ -4138,7 +4175,7 @@
       const preview =
         (cached && cached.preview) ||
         (await withTimeout(
-          fetchInvoicePreviewFromServerAction(invoice),
+          fetchInvoicePreviewFromServerAction(targetInvoice),
           PREVIEW_FETCH_TIMEOUT_MS,
           "Preview request timed out"
         ).catch(() => null));
@@ -4153,7 +4190,7 @@
           previewPdfDataUrl.startsWith("data:application/pdf"))
       ) {
         setPreviewDebugState("server-preview-pdf", {
-          invoiceNumber: invoice.invoiceNumber || "",
+          invoiceNumber: targetInvoice.invoiceNumber || "",
           previewPdfSource: previewPdfSource || "",
         });
         if (cacheKey) {
@@ -4169,23 +4206,48 @@
         return;
       }
       setPreviewDebugState("server-pdf-only-miss", {
-        invoiceNumber: invoice.invoiceNumber || "",
+        invoiceNumber: targetInvoice.invoiceNumber || "",
         resolvedInvoiceId: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) || "",
       });
+      const directPreviewInvoice = mergeObjects(targetInvoice, {
+        invoiceId:
+          pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) ||
+          pickFirst(targetInvoice.invoiceId || targetInvoice.id),
+      });
+      const directUrlCandidates = resolveNativeInvoicePdfUrlCandidates(directPreviewInvoice).filter(
+        (url) => canUseDirectNativePreviewUrl(url)
+      );
+      if (directUrlCandidates.length) {
+        const directPreviewUrl = directUrlCandidates[0];
+        setPreviewProbe({
+          invoiceId: pickFirst(directPreviewInvoice.invoiceId) || "",
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          outcome: "native-url-fallback",
+          url: directPreviewUrl,
+        });
+        setPreviewDebugState("native-url-fallback", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewUrl: directPreviewUrl,
+        });
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(directPreviewUrl);
+        return;
+      }
       appendLog(
         "PDF_PREVIEW_FAILED",
         "Native preview unavailable for invoice " +
-          (invoice.invoiceNumber || invoice.id || "unknown") +
+          (targetInvoice.invoiceNumber || targetInvoice.id || "unknown") +
           ". Fallback rendering is disabled to prevent mock invoice previews."
       );
       setPreviewDebugState("native-unavailable", {
-        invoiceNumber: invoice.invoiceNumber || "",
+        invoiceNumber: targetInvoice.invoiceNumber || "",
         previewPdfSource: previewPdfSource || "",
       });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
-        invoice,
+        targetInvoice,
         preview || null,
         false,
         "Unable to load native invoice PDF preview right now. This app now blocks mock fallback previews."
@@ -4193,17 +4255,19 @@
     } catch (_error) {
       appendLog(
         "PDF_PREVIEW_FAILED",
-        "Native preview failed for invoice " + (invoice.invoiceNumber || invoice.id || "unknown") + ".",
+        "Native preview failed for invoice " +
+          (targetInvoice.invoiceNumber || targetInvoice.id || "unknown") +
+          ".",
         _error
       );
       setPreviewDebugState("native-failed", {
-        invoiceNumber: invoice.invoiceNumber || "",
+        invoiceNumber: targetInvoice.invoiceNumber || "",
         error: simplifyError(_error),
       });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
-        invoice,
+        targetInvoice,
         null,
         false,
         "Unable to load native invoice preview details right now."
@@ -4296,6 +4360,11 @@
       `${normalizedBase}/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/api/1.0/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
+      `${normalizedBase}/api/1.0/invoices/${encodedId}/generate`,
+      pickFirst(invoice && invoice.pdfUrl),
+      pickFirst(invoice && invoice.downloadUrl),
+      pickFirst(invoice && invoice.url),
       resolveNativeInvoiceDownloadUrl(invoice),
     ]);
   }
@@ -4320,6 +4389,24 @@
     const normalizedBase = baseUrl.replace(/\/+$/, "");
     const encodedId = encodeURIComponent(String(invoiceId).trim());
     return `${normalizedBase}/api/v1/invoices/${encodedId}/generate`;
+  }
+
+  function canUseDirectNativePreviewUrl(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return false;
+    }
+    try {
+      const base = getCurrentWorkspaceBaseUrl() || window.location.origin;
+      const parsed = new URL(text, base);
+      const host = String(parsed.hostname || "").toLowerCase();
+      if (!host.endsWith("rocketlane.com")) {
+        return false;
+      }
+      return /^https?:$/i.test(parsed.protocol);
+    } catch (_error) {
+      return false;
+    }
   }
 
   async function tryExtractPdfBytesFromZip(buffer) {
@@ -6557,6 +6644,10 @@
   }
 
   function updateDebugState(reason) {
+    const previous =
+      window.__invoiceAccessDebug && typeof window.__invoiceAccessDebug === "object"
+        ? window.__invoiceAccessDebug
+        : {};
     window.__invoiceAccessDebug = {
       reason: reason || "",
       connected: state.connected,
@@ -6575,6 +6666,8 @@
       rawAccount: state.rawAccount,
       teamMembersCount: Array.isArray(state.teamMembers) ? state.teamMembers.length : 0,
       teamMembersPreview: Array.isArray(state.teamMembers) ? state.teamMembers.slice(0, 5) : [],
+      previewProbe: previous.previewProbe || null,
+      previewLast: previous.previewLast || null,
     };
   }
 

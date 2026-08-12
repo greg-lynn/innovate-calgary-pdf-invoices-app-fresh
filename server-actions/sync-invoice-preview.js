@@ -12,6 +12,12 @@ function pickFirst(value) {
   return "";
 }
 
+function canonicalInvoiceNumber(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
 function normalizeLookupKey(value) {
   return String(value || "")
     .toLowerCase()
@@ -216,17 +222,19 @@ function normalizePreviewPdfFromResult(result, request) {
     return result;
   }
   const targetInvoiceId = pickFirst(request && (request.previewInvoiceId || request.invoiceId));
-  const targetInvoiceNumber = pickFirst(
+  const targetInvoiceNumber = canonicalInvoiceNumber(
+    pickFirst(
     request &&
       (request.previewInvoiceNumber || request.invoiceNumberForPreview || request.invoiceNumber)
-  ).toUpperCase();
+    )
+  );
   const invoices = Array.isArray(result.invoices) ? result.invoices : [];
   const matched = invoices.find((invoice) => {
     if (!invoice || typeof invoice !== "object") {
       return false;
     }
     const invoiceId = pickFirst(invoice.invoiceId || invoice.id);
-    const invoiceNumber = pickFirst(invoice.invoiceNumber).toUpperCase();
+    const invoiceNumber = canonicalInvoiceNumber(pickFirst(invoice.invoiceNumber));
     if (targetInvoiceId && invoiceId && targetInvoiceId === invoiceId) {
       return true;
     }

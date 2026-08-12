@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-disable-mode-prefetch-20260812l";
+  window.__invoiceAccessBuild = "preview-prefetch-field-alias-fix-20260812m";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1526,6 +1526,10 @@
     if (direct) {
       return direct;
     }
+    const previewDirect = normalizePdfDataUrl(preview.previewPdfDataUrl);
+    if (previewDirect) {
+      return previewDirect;
+    }
     const fallbackDirect = normalizePdfDataUrl(
       preview.dataUrl || preview.fileDataUrl || preview.documentDataUrl
     );
@@ -1534,6 +1538,7 @@
     }
     const base64 = normalizeBase64PdfPayload(
       preview.pdfBase64 ||
+        preview.previewPdfBase64 ||
         preview.base64 ||
         preview.fileBase64 ||
         preview.documentBase64 ||
@@ -1555,6 +1560,7 @@
     }
     const direct = pickFirst(
       preview.pdfUrl ||
+        preview.previewPdfUrl ||
         preview.url ||
         preview.downloadUrl ||
         preview.signedUrl ||
@@ -1633,6 +1639,9 @@
       if (
         typeof current.pdfDataUrl === "string" ||
         typeof current.pdfBase64 === "string" ||
+        typeof current.previewPdfDataUrl === "string" ||
+        typeof current.previewPdfBase64 === "string" ||
+        typeof current.previewPdfUrl === "string" ||
         typeof current.pdfUrl === "string" ||
         typeof current.url === "string" ||
         Array.isArray(current.lineItems) ||
@@ -1724,7 +1733,9 @@
         return {
           invoiceId: pickFirst(current.invoiceId || current.id || ""),
           pdfDataUrl,
-          pdfBase64: pickFirst(current.pdfBase64 || current.base64 || ""),
+          pdfBase64: pickFirst(
+            current.pdfBase64 || current.previewPdfBase64 || current.base64 || ""
+          ),
           pdfSource: pickFirst(current.pdfSource || ""),
           pdfUrl,
         };

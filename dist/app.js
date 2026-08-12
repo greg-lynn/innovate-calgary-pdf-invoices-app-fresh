@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-server-deterministic-20260812a";
+  window.__invoiceAccessBuild = "preview-runtime-http-fallback-20260812b";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4851,11 +4851,21 @@
       !state.client.data ||
       typeof state.client.data.invoke !== "function"
     ) {
+      setPreviewProbe({
+        invoiceId: pickFirst(invoice && (invoice.invoiceId || invoice.id)) || "",
+        invoiceNumber: pickFirst(invoice && invoice.invoiceNumber) || "",
+        outcome: "server-pdf-only-no-client",
+      });
       return null;
     }
     const previewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id || ""));
     const previewInvoiceNumber = pickFirst(invoice && (invoice.invoiceNumber || ""));
     if (!previewInvoiceId && !previewInvoiceNumber) {
+      setPreviewProbe({
+        invoiceId: "",
+        invoiceNumber: "",
+        outcome: "server-pdf-only-missing-identifiers",
+      });
       return null;
     }
     const workspaceCandidates = getWorkspaceCandidates();
@@ -4905,8 +4915,10 @@
       if (!result || result.ok === false) {
         setPreviewProbe({
           invoiceId: previewInvoiceId || "",
+          invoiceNumber: previewInvoiceNumber || "",
           outcome: "server-pdf-only-result-error",
           error: result && result.error ? String(result.error) : "",
+          diagnostics: result && result.diagnostics ? result.diagnostics : null,
         });
         return null;
       }

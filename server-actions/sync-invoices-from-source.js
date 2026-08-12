@@ -1,6 +1,8 @@
 "use strict";
 
 const { PDFDocument, rgb } = require("pdf-lib");
+const http = require("http");
+const https = require("https");
 
 const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 // Production override: embed API key here so app works without installer prompt.
@@ -8,6 +10,8 @@ const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 const EMBEDDED_ROCKETLANE_API_KEY = "rl-6657ce9e-ee84-465d-b4df-d97b1239a343";
 const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_HTTP_REDIRECTS = 5;
 const FIELD_ALIAS_GROUPS = {
   contractName: ["contract name", "contract", "contractname"],
   hub: ["hub"],
@@ -727,14 +731,15 @@ function extractRecordObject(payload, preferredKeys) {
 }
 
 async function requestJson(url, headers) {
-  const response = await fetch(url, {
+  const response = await requestBuffer(url, {
     method: "GET",
     headers,
+    timeoutMs: REQUEST_TIMEOUT_MS,
   });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  const text = await response.text();
+  const text = bufferToUtf8Text(response.body);
   if (!text) {
     return null;
   }
@@ -746,18 +751,19 @@ async function requestJson(url, headers) {
 }
 
 async function requestBinary(url, headers) {
-  const response = await fetch(url, {
+  const response = await requestBuffer(url, {
     method: "GET",
     headers,
+    timeoutMs: REQUEST_TIMEOUT_MS,
   });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  const buffer = await response.arrayBuffer();
-  if (!buffer || !buffer.byteLength) {
+  const body = response.body;
+  if (!body || !body.length) {
     return null;
   }
-  return new Uint8Array(buffer);
+  return new Uint8Array(body);
 }
 
 async function requestBinaryWithMethods(url, headers, methods) {
@@ -766,23 +772,161 @@ async function requestBinaryWithMethods(url, headers, methods) {
   for (let i = 0; i < methodList.length; i += 1) {
     const method = String(methodList[i] || "GET").toUpperCase();
     try {
-      const response = await fetch(url, {
+      const response = await requestBuffer(url, {
         method,
         headers,
+        timeoutMs: REQUEST_TIMEOUT_MS,
       });
       if (!response.ok) {
         throw new Error(`Request failed (${response.status}) for ${url}`);
       }
-      const buffer = await response.arrayBuffer();
-      if (!buffer || !buffer.byteLength) {
+      const body = response.body;
+      if (!body || !body.length) {
         throw new Error(`Empty binary payload for ${url}`);
       }
-      return new Uint8Array(buffer);
+      return new Uint8Array(body);
     } catch (error) {
       lastError = error;
     }
   }
   throw lastError || new Error(`Unable to fetch binary payload for ${url}`);
+}
+
+function hasFetchRuntime() {
+  return typeof fetch === "function";
+}
+
+function normalizeRequestHeaders(headers) {
+  const output = {};
+  if (!headers || typeof headers !== "object") {
+    return output;
+  }
+  Object.keys(headers).forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(headers, key)) {
+      return;
+    }
+    const value = headers[key];
+    if (value == null) {
+      return;
+    }
+    output[String(key)] = String(value);
+  });
+  if (!output["Accept"] && !output["accept"]) {
+    output.Accept = "application/json";
+  }
+  return output;
+}
+
+function isRedirectStatus(statusCode) {
+  return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
+}
+
+function bufferToUtf8Text(buffer) {
+  if (!buffer) {
+    return "";
+  }
+  try {
+    return Buffer.from(buffer).toString("utf8");
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function requestBuffer(url, options) {
+  const settings = options && typeof options === "object" ? options : {};
+  if (hasFetchRuntime()) {
+    try {
+      const response = await fetch(url, {
+        method: String(settings.method || "GET").toUpperCase(),
+        headers: normalizeRequestHeaders(settings.headers),
+      });
+      const bodyArrayBuffer = await response.arrayBuffer();
+      const body = Buffer.from(bodyArrayBuffer || new ArrayBuffer(0));
+      return {
+        ok: response.ok,
+        status: Number(response.status || 0),
+        body,
+      };
+    } catch (_error) {
+      // Fall back to the Node transport when fetch is unavailable or blocked.
+    }
+  }
+  return requestBufferViaNode(url, settings, 0);
+}
+
+function requestBufferViaNode(url, options, redirectCount) {
+  const settings = options && typeof options === "object" ? options : {};
+  const redirects = Number(redirectCount || 0);
+  return new Promise((resolve, reject) => {
+    let parsed = null;
+    try {
+      parsed = new URL(String(url || ""));
+    } catch (_error) {
+      reject(new Error(`Invalid URL ${url}`));
+      return;
+    }
+    const method = String(settings.method || "GET").toUpperCase();
+    const headers = normalizeRequestHeaders(settings.headers);
+    const transport = parsed.protocol === "http:" ? http : https;
+    const request = transport.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: `${parsed.pathname || ""}${parsed.search || ""}`,
+        method,
+        headers,
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on("end", async () => {
+          const statusCode = Number(response.statusCode || 0);
+          const location = pickFirst(response.headers && response.headers.location);
+          if (isRedirectStatus(statusCode) && location) {
+            if (redirects >= MAX_HTTP_REDIRECTS) {
+              reject(new Error(`Too many redirects for ${url}`));
+              return;
+            }
+            const nextUrl = ensureAbsoluteUrl(parsed.toString(), location);
+            if (!nextUrl) {
+              reject(new Error(`Invalid redirect location for ${url}`));
+              return;
+            }
+            const nextMethod = statusCode === 303 ? "GET" : method;
+            try {
+              const redirected = await requestBufferViaNode(
+                nextUrl,
+                mergeObjects(settings, { method: nextMethod }),
+                redirects + 1
+              );
+              resolve(redirected);
+            } catch (redirectError) {
+              reject(redirectError);
+            }
+            return;
+          }
+          resolve({
+            ok: statusCode >= 200 && statusCode < 300,
+            status: statusCode,
+            body: Buffer.concat(chunks),
+          });
+        });
+      }
+    );
+    request.on("error", (error) => {
+      reject(error);
+    });
+    request.setTimeout(Number(settings.timeoutMs || REQUEST_TIMEOUT_MS), () => {
+      request.destroy(new Error(`Request timed out for ${url}`));
+    });
+    if (settings.body) {
+      request.write(settings.body);
+    }
+    request.end();
+  });
 }
 
 function bytesToPdfDataUrl(bytes) {

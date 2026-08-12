@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-direct-url-fallback-20260812c";
+  window.__invoiceAccessBuild = "preview-signed-url-only-20260812d";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1507,11 +1507,34 @@
     return `data:application/pdf;base64,${base64}`;
   }
 
+  function normalizePreviewPdfUrl(preview) {
+    if (!preview || typeof preview !== "object") {
+      return "";
+    }
+    const direct = pickFirst(
+      preview.pdfUrl ||
+        preview.url ||
+        preview.downloadUrl ||
+        preview.signedUrl ||
+        preview.fileUrl ||
+        preview.documentUrl
+    );
+    if (canUseDirectNativePreviewUrl(direct)) {
+      return direct;
+    }
+    if (preview.previewPdf && typeof preview.previewPdf === "object") {
+      return normalizePreviewPdfUrl(preview.previewPdf);
+    }
+    return "";
+  }
+
   function hasPreviewPdfDataUrl(preview) {
     if (!preview || typeof preview !== "object") {
       return false;
     }
-    return Boolean(normalizePreviewPdfDataUrl(preview));
+    return Boolean(
+      normalizePreviewPdfDataUrl(preview) || normalizePreviewPdfUrl(preview)
+    );
   }
 
   function collectPreviewCandidatesFromPayload(payload) {
@@ -1543,6 +1566,8 @@
       if (
         typeof current.pdfDataUrl === "string" ||
         typeof current.pdfBase64 === "string" ||
+        typeof current.pdfUrl === "string" ||
+        typeof current.url === "string" ||
         Array.isArray(current.lineItems) ||
         Array.isArray(current.customFields) ||
         Array.isArray(current.allFields)
@@ -1572,7 +1597,10 @@
     if (!candidates.length) {
       return null;
     }
-    const withPdf = candidates.find((candidate) => hasPreviewPdfDataUrl(candidate));
+    const withPdf = candidates.find(
+      (candidate) =>
+        hasPreviewPdfDataUrl(candidate) || Boolean(normalizePreviewPdfUrl(candidate))
+    );
     return withPdf || candidates[0] || null;
   }
 
@@ -1594,6 +1622,7 @@
             pdfDataUrl: stringPdfDataUrl,
             pdfBase64: "",
             pdfSource: "string-payload",
+            pdfUrl: "",
           };
         }
         continue;
@@ -1623,12 +1652,14 @@
         queue.push(current.previewPdf);
       }
       const pdfDataUrl = normalizePreviewPdfDataUrl(current);
-      if (pdfDataUrl) {
+      const pdfUrl = normalizePreviewPdfUrl(current);
+      if (pdfDataUrl || pdfUrl) {
         return {
           invoiceId: pickFirst(current.invoiceId || current.id || ""),
           pdfDataUrl,
           pdfBase64: pickFirst(current.pdfBase64 || current.base64 || ""),
           pdfSource: pickFirst(current.pdfSource || ""),
+          pdfUrl,
         };
       }
       const nested = [
@@ -4209,18 +4240,15 @@
         invoiceNumber: targetInvoice.invoiceNumber || "",
         resolvedInvoiceId: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) || "",
       });
-      const directPreviewInvoice = mergeObjects(targetInvoice, {
-        invoiceId:
-          pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) ||
-          pickFirst(targetInvoice.invoiceId || targetInvoice.id),
-      });
-      const directUrlCandidates = resolveNativeInvoicePdfUrlCandidates(directPreviewInvoice).filter(
-        (url) => canUseDirectNativePreviewUrl(url)
-      );
-      if (directUrlCandidates.length) {
-        const directPreviewUrl = directUrlCandidates[0];
+      const serverSignedPreviewUrl = normalizePreviewPdfUrl(serverPdfOnlyPreview || {});
+      const previewSignedUrl = normalizePreviewPdfUrl(preview || {});
+      const directPreviewUrl = serverSignedPreviewUrl || previewSignedUrl;
+      if (directPreviewUrl) {
         setPreviewProbe({
-          invoiceId: pickFirst(directPreviewInvoice.invoiceId) || "",
+          invoiceId:
+            pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) ||
+            pickFirst(targetInvoice.invoiceId || targetInvoice.id) ||
+            "",
           invoiceNumber: targetInvoice.invoiceNumber || "",
           outcome: "native-url-fallback",
           url: directPreviewUrl,
@@ -4403,7 +4431,22 @@
       if (!host.endsWith("rocketlane.com")) {
         return false;
       }
-      return /^https?:$/i.test(parsed.protocol);
+      if (!/^https?:$/i.test(parsed.protocol)) {
+        return false;
+      }
+      const query = String(parsed.search || "").toLowerCase();
+      if (!query) {
+        return false;
+      }
+      return (
+        query.includes("x-amz-signature=") ||
+        query.includes("x-amz-credential=") ||
+        query.includes("x-amz-security-token=") ||
+        query.includes("signature=") ||
+        query.includes("token=") ||
+        query.includes("policy=") ||
+        query.includes("expires=")
+      );
     } catch (_error) {
       return false;
     }
@@ -4989,12 +5032,14 @@
         },
       });
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
-      if (directPdf && directPdf.pdfDataUrl) {
+      if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
         setPreviewProbe({
           invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
           invoiceNumber: previewInvoiceNumber || "",
           outcome: "server-pdf-only-success",
           source: pickFirst(directPdf.pdfSource || ""),
+          hasDataUrl: Boolean(directPdf.pdfDataUrl),
+          hasSignedUrl: Boolean(directPdf.pdfUrl),
         });
         return directPdf;
       }
@@ -5011,7 +5056,8 @@
       }
       const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : {};
       const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);
-      if (!pdfDataUrl) {
+      const pdfUrl = normalizePreviewPdfUrl(previewPdf);
+      if (!pdfDataUrl && !pdfUrl) {
         setPreviewProbe({
           invoiceId: previewInvoiceId || "",
           outcome: "server-pdf-only-no-pdf",
@@ -5024,12 +5070,15 @@
         invoiceNumber: previewInvoiceNumber || "",
         outcome: "server-pdf-only-success",
         source: pickFirst(previewPdf.pdfSource || ""),
+        hasDataUrl: Boolean(pdfDataUrl),
+        hasSignedUrl: Boolean(pdfUrl),
       });
       return {
         invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId),
         pdfDataUrl,
         pdfBase64: pickFirst(previewPdf.pdfBase64 || ""),
         pdfSource: pickFirst(previewPdf.pdfSource || ""),
+        pdfUrl,
       };
     } catch (_error) {
       setPreviewProbe({

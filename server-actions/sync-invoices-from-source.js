@@ -1041,6 +1041,32 @@ function extractLikelyPdfUrlFromBytes(bytes) {
   return "";
 }
 
+function isLikelySignedPdfUrl(value) {
+  const text = pickFirst(value);
+  if (!text) {
+    return false;
+  }
+  let parsed = null;
+  try {
+    parsed = new URL(text);
+  } catch (_error) {
+    return false;
+  }
+  const query = String(parsed.search || "").toLowerCase();
+  if (!query) {
+    return false;
+  }
+  return (
+    query.includes("x-amz-signature=") ||
+    query.includes("x-amz-credential=") ||
+    query.includes("x-amz-security-token=") ||
+    query.includes("signature=") ||
+    query.includes("token=") ||
+    query.includes("policy=") ||
+    query.includes("expires=")
+  );
+}
+
 async function removeLogoFromPdfBytes(pdfBytes) {
   if (!(pdfBytes instanceof Uint8Array) || !looksLikePdfBytes(pdfBytes)) {
     return pdfBytes;
@@ -1089,7 +1115,7 @@ async function removeLogoFromPdfBytes(pdfBytes) {
 async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
-    return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+    return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
   }
   const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
   const pdfPaths = [
@@ -1134,23 +1160,36 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
           pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
           pdfBase64,
           pdfSource: `${candidate.source}-logo-masked`,
+          pdfUrl: "",
         };
       }
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
       if (redirectedPdfUrl) {
-        const redirectedBytes = await requestBinaryWithMethods(
-          redirectedPdfUrl,
-          { Accept: "*/*" },
-          ["GET"]
-        );
-        if (looksLikePdfBytes(redirectedBytes)) {
-          const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
-          const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
-          return {
-            pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
-            pdfBase64: redirectedBase64,
-            pdfSource: `${candidate.source}-redirect-url-logo-masked`,
-          };
+        try {
+          const redirectedBytes = await requestBinaryWithMethods(
+            redirectedPdfUrl,
+            { Accept: "*/*" },
+            ["GET"]
+          );
+          if (looksLikePdfBytes(redirectedBytes)) {
+            const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+            const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
+            return {
+              pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+              pdfBase64: redirectedBase64,
+              pdfSource: `${candidate.source}-redirect-url-logo-masked`,
+              pdfUrl: "",
+            };
+          }
+        } catch (_redirectError) {
+          if (isLikelySignedPdfUrl(redirectedPdfUrl)) {
+            return {
+              pdfDataUrl: "",
+              pdfBase64: "",
+              pdfSource: `${candidate.source}-redirect-url-signed`,
+              pdfUrl: redirectedPdfUrl,
+            };
+          }
         }
       }
     } catch (_error) {
@@ -1162,10 +1201,10 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
     headers,
     invoiceRecord
   );
-  if (invoiceUrlPdf && invoiceUrlPdf.pdfDataUrl) {
+  if (invoiceUrlPdf && (invoiceUrlPdf.pdfDataUrl || invoiceUrlPdf.pdfUrl)) {
     return invoiceUrlPdf;
   }
-  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
 }
 
 function collectPreviewPdfUrlCandidates(invoiceRecord) {
@@ -1219,10 +1258,14 @@ function collectPreviewPdfUrlCandidates(invoiceRecord) {
 async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRecord) {
   const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
   const candidates = collectPreviewPdfUrlCandidates(invoiceRecord);
+  let signedUrlFallback = "";
   for (let i = 0; i < candidates.length; i += 1) {
     const candidateUrl = ensureAbsoluteUrl(baseUrl, candidates[i]);
     if (!candidateUrl) {
       continue;
+    }
+    if (!signedUrlFallback && isLikelySignedPdfUrl(candidateUrl)) {
+      signedUrlFallback = candidateUrl;
     }
     try {
       const pdfBytes = await requestBinaryWithMethods(candidateUrl, requestHeaders, ["GET"]);
@@ -1233,30 +1276,62 @@ async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRec
           pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
           pdfBase64,
           pdfSource: "invoice-url-logo-masked",
+          pdfUrl: "",
         };
       }
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
       if (redirectedPdfUrl) {
-        const redirectedBytes = await requestBinaryWithMethods(
-          redirectedPdfUrl,
-          { Accept: "*/*" },
-          ["GET"]
-        );
-        if (looksLikePdfBytes(redirectedBytes)) {
-          const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
-          const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
-          return {
-            pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
-            pdfBase64: redirectedBase64,
-            pdfSource: "invoice-url-redirect-logo-masked",
-          };
+        if (!signedUrlFallback && isLikelySignedPdfUrl(redirectedPdfUrl)) {
+          signedUrlFallback = redirectedPdfUrl;
+        }
+        try {
+          const redirectedBytes = await requestBinaryWithMethods(
+            redirectedPdfUrl,
+            { Accept: "*/*" },
+            ["GET"]
+          );
+          if (looksLikePdfBytes(redirectedBytes)) {
+            const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+            const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
+            return {
+              pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+              pdfBase64: redirectedBase64,
+              pdfSource: "invoice-url-redirect-logo-masked",
+              pdfUrl: "",
+            };
+          }
+        } catch (_redirectError) {
+          if (isLikelySignedPdfUrl(redirectedPdfUrl)) {
+            return {
+              pdfDataUrl: "",
+              pdfBase64: "",
+              pdfSource: "invoice-url-redirect-signed",
+              pdfUrl: redirectedPdfUrl,
+            };
+          }
         }
       }
     } catch (_error) {
+      if (isLikelySignedPdfUrl(candidateUrl)) {
+        return {
+          pdfDataUrl: "",
+          pdfBase64: "",
+          pdfSource: "invoice-url-signed-fallback",
+          pdfUrl: candidateUrl,
+        };
+      }
       // Try the next URL candidate.
     }
   }
-  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+  if (signedUrlFallback) {
+    return {
+      pdfDataUrl: "",
+      pdfBase64: "",
+      pdfSource: "invoice-url-signed-fallback",
+      pdfUrl: signedUrlFallback,
+    };
+  }
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
 }
 
 async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostics) {
@@ -2943,7 +3018,7 @@ module.exports = {
                 encodeURIComponent(previewInvoiceId),
                 invoiceRecord
               );
-              if (previewPdf && previewPdf.pdfDataUrl) {
+              if (previewPdf && (previewPdf.pdfDataUrl || previewPdf.pdfUrl)) {
                 previewPdfAttempts.push({
                   baseUrl,
                   invoiceId: previewInvoiceId,
@@ -2957,6 +3032,7 @@ module.exports = {
                     pdfDataUrl: previewPdf.pdfDataUrl,
                     pdfBase64: previewPdf.pdfBase64 || "",
                     pdfSource: previewPdf.pdfSource || "",
+                    pdfUrl: previewPdf.pdfUrl || "",
                   },
                   viewer,
                   diagnostics: mergeObjects(diagnostics, {
@@ -3078,7 +3154,11 @@ module.exports = {
                 preview.pdfBase64 = previewPdf.pdfBase64 || "";
                 preview.pdfSource = previewPdf.pdfSource;
               }
-              if (preview.pdfDataUrl) {
+              if (previewPdf.pdfUrl) {
+                preview.pdfUrl = previewPdf.pdfUrl;
+                preview.pdfSource = previewPdf.pdfSource || preview.pdfSource || "";
+              }
+              if (preview.pdfDataUrl || preview.pdfUrl) {
                 return {
                   ok: true,
                   preview,

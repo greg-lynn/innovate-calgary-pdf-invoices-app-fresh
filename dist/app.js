@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-rate-limit-hardening-20260812q";
+  window.__invoiceAccessBuild = "preview-invoke-shape-retry-20260812r";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1465,6 +1465,56 @@
       args: Object.assign({}, nested),
       body: Object.assign({}, nested),
     });
+  }
+
+  async function invokeServerActionWithPreviewPayloadVariants(actionName, payload) {
+    const core = payload && typeof payload === "object" ? payload : {};
+    const variants = [
+      Object.assign({}, core),
+      wrapServerActionRequestPayload(core),
+      { request: Object.assign({}, core) },
+      { data: Object.assign({}, core) },
+      { payload: Object.assign({}, core) },
+      { input: Object.assign({}, core) },
+      { args: Object.assign({}, core) },
+      { body: Object.assign({}, core) },
+    ];
+    let firstResponse = null;
+    let lastError = null;
+    for (let i = 0; i < variants.length; i += 1) {
+      try {
+        const response = await state.client.data.invoke(actionName, variants[i]);
+        if (!firstResponse) {
+          firstResponse = response;
+        }
+        const result = unwrapServerActionResponse(response);
+        const previewRequest =
+          result && result.diagnostics && result.diagnostics.previewRequest
+            ? result.diagnostics.previewRequest
+            : null;
+        const hasRequestedTarget = Boolean(
+          pickFirst(
+            previewRequest &&
+              (previewRequest.previewInvoiceIdRequested ||
+                previewRequest.targetPrefetchInvoiceId ||
+                previewRequest.previewInvoiceNumberRequested ||
+                previewRequest.targetPrefetchInvoiceNumber)
+          )
+        );
+        if (hasRequestedTarget) {
+          return response;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (firstResponse) {
+      return firstResponse;
+    }
+    if (lastError) {
+      throw lastError;
+    }
+    return state.client.data.invoke(actionName, wrapServerActionRequestPayload(core));
   }
 
   function normalizePdfDataUrl(value) {
@@ -5209,7 +5259,7 @@
         invoiceNumber: previewInvoiceNumber || "",
         outcome: "server-pdf-only-start",
       });
-      const strictPreviewRequestPayload = wrapServerActionRequestPayload({
+      const strictPreviewRequestCore = {
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
@@ -5238,12 +5288,12 @@
             "",
           workspaceBaseUrl,
         },
-      });
+      };
       for (let strictAttempt = 0; strictAttempt < 2; strictAttempt += 1) {
         try {
-          const strictPayload = await state.client.data.invoke(
+          const strictPayload = await invokeServerActionWithPreviewPayloadVariants(
             "syncInvoicesFromSource",
-            strictPreviewRequestPayload
+            strictPreviewRequestCore
           );
           const strictDirectPdf = extractPreviewPdfOnlyFromPayload(strictPayload);
           if (strictDirectPdf && (strictDirectPdf.pdfDataUrl || strictDirectPdf.pdfUrl)) {
@@ -5347,7 +5397,7 @@
           });
         }
       }
-      const requestPayload = wrapServerActionRequestPayload({
+      const requestPayload = {
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
@@ -5376,10 +5426,10 @@
             "",
           workspaceBaseUrl,
         },
-      });
+      };
       let payload = null;
       try {
-        payload = await state.client.data.invoke(
+        payload = await invokeServerActionWithPreviewPayloadVariants(
           "syncInvoicePreviewPayload",
           requestPayload
         );
@@ -5390,9 +5440,9 @@
           outcome: "server-pdf-only-preview-action-fallback",
           error: simplifyError(previewActionError),
         });
-        payload = await state.client.data.invoke(
+        payload = await invokeServerActionWithPreviewPayloadVariants(
           "syncInvoicesFromSource",
-          wrapServerActionRequestPayload({
+          {
             sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
             accountName: state.context.accountName || "",
             workspaceBaseUrl,
@@ -5417,7 +5467,7 @@
                 "",
               workspaceBaseUrl,
             },
-          })
+          }
         );
       }
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
@@ -5505,7 +5555,7 @@
       if (!pdfDataUrl && !pdfUrl) {
         let fallbackError = "";
         try {
-          const prefetchPayload = wrapServerActionRequestPayload({
+          const prefetchPayload = {
             sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
             accountName: state.context.accountName || "",
             workspaceBaseUrl,
@@ -5530,8 +5580,8 @@
                 "",
               workspaceBaseUrl,
             },
-          });
-          const fallbackPayload = await state.client.data.invoke(
+          };
+          const fallbackPayload = await invokeServerActionWithPreviewPayloadVariants(
             "syncInvoicesFromSource",
             prefetchPayload
           );

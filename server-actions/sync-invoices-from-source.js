@@ -3244,6 +3244,10 @@ module.exports = {
       request.prefetchPreviewPdfs === true &&
       disablePreviewMode &&
       Boolean(targetPrefetchInvoiceId || targetPrefetchInvoiceNumber);
+    const isAnyPreviewPrefetchRequest =
+      request.searchOnly !== true &&
+      request.prefetchPreviewPdfs === true &&
+      disablePreviewMode;
     diagnostics.previewRequest = {
       isPreviewRequest,
       disablePreviewMode,
@@ -3251,6 +3255,7 @@ module.exports = {
       previewInvoiceNumberRequested,
       requestMode: String(request.requestMode || request.mode || ""),
       targetedPrefetch: isTargetedPreviewPrefetchRequest,
+      anyPrefetchPreview: isAnyPreviewPrefetchRequest,
       targetPrefetchInvoiceId,
       targetPrefetchInvoiceNumber,
     };
@@ -3572,10 +3577,10 @@ module.exports = {
           if (invoiceId) {
             const targetInvoice = normalized;
             const shouldEnrichFromLines =
-              !isTargetedPreviewPrefetchRequest &&
-              (Number(targetInvoice.quantityHours || 0) <= 0 ||
-                !pickFirst(targetInvoice.hub) ||
-                !pickFirst(targetInvoice.program));
+                !isAnyPreviewPrefetchRequest &&
+                (Number(targetInvoice.quantityHours || 0) <= 0 ||
+                  !pickFirst(targetInvoice.hub) ||
+                  !pickFirst(targetInvoice.program));
             if (shouldEnrichFromLines) {
               lineEnrichmentQueue.push({
                 invoiceId,

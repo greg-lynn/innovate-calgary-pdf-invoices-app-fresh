@@ -187,11 +187,11 @@ function normalizePreviewRequest(request) {
     pickFirstObjectFromAny(base, ["viewerContext"]) ||
     (base.viewerContext && typeof base.viewerContext === "object" ? base.viewerContext : {});
   return Object.assign({}, base, {
-    requestMode: "",
-    mode: "",
+    requestMode: "preview-pdf",
+    mode: "preview-pdf",
     searchOnly: false,
-    prefetchPreviewPdfs: true,
-    disablePreviewMode: true,
+    prefetchPreviewPdfs: false,
+    disablePreviewMode: false,
     prefetchInvoiceId: invoiceId,
     prefetchInvoiceNumber: invoiceNumber,
     workspaceBaseUrl: pickFirst(
@@ -210,6 +210,47 @@ function normalizePreviewRequest(request) {
     preview: Object.assign({}, preview, {
       invoiceId: pickFirst(preview.invoiceId || invoiceId),
       invoiceNumber: pickFirst(preview.invoiceNumber || invoiceNumber),
+    }),
+  });
+}
+
+function hasPreviewPdf(result) {
+  if (!result || typeof result !== "object") {
+    return false;
+  }
+  const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : null;
+  if (!previewPdf) {
+    return false;
+  }
+  return Boolean(
+    pickFirst(previewPdf.pdfDataUrl || "") ||
+      pickFirst(previewPdf.pdfBase64 || "") ||
+      pickFirst(previewPdf.pdfUrl || "")
+  );
+}
+
+function buildTargetedPrefetchRequest(request) {
+  const targetInvoiceId = pickFirst(request && (request.previewInvoiceId || request.invoiceId));
+  const targetInvoiceNumber = pickFirst(
+    request &&
+      (request.previewInvoiceNumber || request.invoiceNumberForPreview || request.invoiceNumber)
+  );
+  return Object.assign({}, request, {
+    requestMode: "",
+    mode: "",
+    searchOnly: false,
+    prefetchPreviewPdfs: true,
+    disablePreviewMode: true,
+    prefetchInvoiceId: targetInvoiceId,
+    prefetchInvoiceNumber: targetInvoiceNumber,
+    previewInvoiceId: targetInvoiceId,
+    invoiceId: targetInvoiceId,
+    previewInvoiceNumber: targetInvoiceNumber,
+    invoiceNumberForPreview: targetInvoiceNumber,
+    invoiceNumber: targetInvoiceNumber,
+    preview: Object.assign({}, request && request.preview, {
+      invoiceId: targetInvoiceId,
+      invoiceNumber: targetInvoiceNumber,
     }),
   });
 }
@@ -262,8 +303,59 @@ function normalizePreviewPdfFromResult(result, request) {
 module.exports = {
   syncInvoicePreviewPayload: async (request = {}, context = {}) => {
     const normalizedRequest = normalizePreviewRequest(request);
-    const result = await syncInvoicesFromSource(normalizedRequest, context);
-    return normalizePreviewPdfFromResult(result, normalizedRequest);
+    const startedAt = Date.now();
+    let strictResult = null;
+    let strictError = "";
+    try {
+      strictResult = await syncInvoicesFromSource(normalizedRequest, context);
+    } catch (error) {
+      strictError = String(error && error.message ? error.message : error);
+    }
+    const strictNormalized = normalizePreviewPdfFromResult(strictResult, normalizedRequest);
+    if (hasPreviewPdf(strictNormalized)) {
+      return Object.assign({}, strictNormalized, {
+        diagnostics: Object.assign({}, strictNormalized.diagnostics || {}, {
+          previewPipeline: "strict-preview-pdf",
+          previewPipelineElapsedMs: Date.now() - startedAt,
+          previewPipelineStrictError: strictError,
+        }),
+      });
+    }
+
+    const fallbackRequest = buildTargetedPrefetchRequest(normalizedRequest);
+    let fallbackResult = null;
+    let fallbackError = "";
+    try {
+      fallbackResult = await syncInvoicesFromSource(fallbackRequest, context);
+    } catch (error) {
+      fallbackError = String(error && error.message ? error.message : error);
+    }
+    const fallbackNormalized = normalizePreviewPdfFromResult(fallbackResult, fallbackRequest);
+    if (hasPreviewPdf(fallbackNormalized)) {
+      return Object.assign({}, fallbackNormalized, {
+        diagnostics: Object.assign({}, fallbackNormalized.diagnostics || {}, {
+          previewPipeline: "targeted-prefetch-fallback",
+          previewPipelineElapsedMs: Date.now() - startedAt,
+          previewPipelineStrictError: strictError,
+          previewPipelineFallbackError: fallbackError,
+        }),
+      });
+    }
+
+    const baseResult =
+      fallbackNormalized && typeof fallbackNormalized === "object"
+        ? fallbackNormalized
+        : strictNormalized && typeof strictNormalized === "object"
+          ? strictNormalized
+          : { ok: false, previewPdf: null };
+    return Object.assign({}, baseResult, {
+      diagnostics: Object.assign({}, (baseResult && baseResult.diagnostics) || {}, {
+        previewPipeline: "no-pdf",
+        previewPipelineElapsedMs: Date.now() - startedAt,
+        previewPipelineStrictError: strictError,
+        previewPipelineFallbackError: fallbackError,
+      }),
+    });
   },
 };
 

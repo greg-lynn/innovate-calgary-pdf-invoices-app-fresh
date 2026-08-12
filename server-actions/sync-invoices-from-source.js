@@ -12,6 +12,10 @@ const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_HTTP_REDIRECTS = 5;
+const PREVIEW_PDF_CACHE_TTL_MS = 10 * 60 * 1000;
+const PREVIEW_PDF_CACHE_MAX_ENTRIES = 300;
+const previewPdfCache = new Map();
+const previewPdfInFlight = new Map();
 const FIELD_ALIAS_GROUPS = {
   contractName: ["contract name", "contract", "contractname"],
   hub: ["hub"],
@@ -1376,7 +1380,77 @@ async function removeLogoFromPdfBytes(pdfBytes) {
   }
 }
 
-async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
+function buildPreviewPdfCacheKey(baseUrl, previewInvoiceId) {
+  const normalizedBaseUrl = String(baseUrl || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\/+$/, "");
+  const normalizedInvoiceId = String(previewInvoiceId || "").trim();
+  if (!normalizedBaseUrl || !normalizedInvoiceId) {
+    return "";
+  }
+  return `${normalizedBaseUrl}|${normalizedInvoiceId}`;
+}
+
+function clonePreviewPdfPayload(payload) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  return {
+    pdfDataUrl: pickFirst(input.pdfDataUrl || ""),
+    pdfBase64: pickFirst(input.pdfBase64 || ""),
+    pdfSource: pickFirst(input.pdfSource || ""),
+    pdfUrl: pickFirst(input.pdfUrl || ""),
+  };
+}
+
+function hasUsablePreviewPdf(payload) {
+  const normalized = clonePreviewPdfPayload(payload);
+  return Boolean(normalized.pdfDataUrl || normalized.pdfBase64 || normalized.pdfUrl);
+}
+
+function trimPreviewPdfCache() {
+  if (previewPdfCache.size <= PREVIEW_PDF_CACHE_MAX_ENTRIES) {
+    return;
+  }
+  const keys = Array.from(previewPdfCache.keys());
+  const overflow = previewPdfCache.size - PREVIEW_PDF_CACHE_MAX_ENTRIES;
+  for (let i = 0; i < overflow; i += 1) {
+    previewPdfCache.delete(keys[i]);
+  }
+}
+
+function readPreviewPdfFromCache(cacheKey) {
+  if (!cacheKey || !previewPdfCache.has(cacheKey)) {
+    return null;
+  }
+  const cached = previewPdfCache.get(cacheKey);
+  const now = Date.now();
+  if (
+    !cached ||
+    typeof cached !== "object" ||
+    Number(cached.expiresAt || 0) <= now ||
+    !hasUsablePreviewPdf(cached.payload)
+  ) {
+    previewPdfCache.delete(cacheKey);
+    return null;
+  }
+  const payload = clonePreviewPdfPayload(cached.payload);
+  payload.pdfSource = payload.pdfSource ? `${payload.pdfSource}-cache` : "cache";
+  return payload;
+}
+
+function writePreviewPdfToCache(cacheKey, payload) {
+  if (!cacheKey || !hasUsablePreviewPdf(payload)) {
+    return;
+  }
+  previewPdfCache.delete(cacheKey);
+  previewPdfCache.set(cacheKey, {
+    payload: clonePreviewPdfPayload(payload),
+    expiresAt: Date.now() + PREVIEW_PDF_CACHE_TTL_MS,
+  });
+  trimPreviewPdfCache();
+}
+
+async function fetchPreviewPdfDataUncached(baseUrl, headers, previewInvoiceId, invoiceRecord) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
     return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
@@ -1469,6 +1543,46 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
     return invoiceUrlPdf;
   }
   return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
+}
+
+async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
+  const cacheKey = buildPreviewPdfCacheKey(baseUrl, previewInvoiceId);
+  const cachedPayload = readPreviewPdfFromCache(cacheKey);
+  if (cachedPayload) {
+    return cachedPayload;
+  }
+  if (cacheKey && previewPdfInFlight.has(cacheKey)) {
+    try {
+      const sharedPayload = await previewPdfInFlight.get(cacheKey);
+      if (hasUsablePreviewPdf(sharedPayload)) {
+        return clonePreviewPdfPayload(sharedPayload);
+      }
+    } catch (_error) {
+      // Fall through to a fresh request attempt.
+    }
+  }
+  const inFlightRequest = fetchPreviewPdfDataUncached(
+    baseUrl,
+    headers,
+    previewInvoiceId,
+    invoiceRecord
+  )
+    .then((payload) => {
+      const normalized = clonePreviewPdfPayload(payload);
+      if (hasUsablePreviewPdf(normalized)) {
+        writePreviewPdfToCache(cacheKey, normalized);
+      }
+      return normalized;
+    })
+    .finally(() => {
+      if (cacheKey) {
+        previewPdfInFlight.delete(cacheKey);
+      }
+    });
+  if (cacheKey) {
+    previewPdfInFlight.set(cacheKey, inFlightRequest);
+  }
+  return inFlightRequest;
 }
 
 function collectPreviewPdfUrlCandidates(invoiceRecord) {

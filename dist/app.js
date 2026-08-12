@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-payload-candidate-match-20260812n";
+  window.__invoiceAccessBuild = "preview-target-prefetch-normalize-fix-20260812o";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5216,7 +5216,12 @@
         workspaceBaseUrl,
         workspaceCandidates,
         invoiceId: previewInvoiceId,
+        previewInvoiceId: previewInvoiceId,
+        prefetchInvoiceId: previewInvoiceId,
+        invoiceNumber: previewInvoiceNumber,
         invoiceNumberForPreview: previewInvoiceNumber,
+        previewInvoiceNumber: previewInvoiceNumber,
+        prefetchInvoiceNumber: previewInvoiceNumber,
         preview: {
           invoiceId: previewInvoiceId,
           invoiceNumber: previewInvoiceNumber,
@@ -5258,6 +5263,11 @@
             disablePreviewMode: true,
             prefetchInvoiceId: previewInvoiceId,
             prefetchInvoiceNumber: previewInvoiceNumber,
+            invoiceId: previewInvoiceId,
+            previewInvoiceId: previewInvoiceId,
+            invoiceNumber: previewInvoiceNumber,
+            invoiceNumberForPreview: previewInvoiceNumber,
+            previewInvoiceNumber: previewInvoiceNumber,
             viewerContext: {
               userId: state.context.userId || "",
               userEmail: state.context.userEmail || "",
@@ -5366,6 +5376,11 @@
             disablePreviewMode: true,
             prefetchInvoiceId: previewInvoiceId,
             prefetchInvoiceNumber: previewInvoiceNumber,
+            invoiceId: previewInvoiceId,
+            previewInvoiceId: previewInvoiceId,
+            invoiceNumber: previewInvoiceNumber,
+            invoiceNumberForPreview: previewInvoiceNumber,
+            previewInvoiceNumber: previewInvoiceNumber,
             viewerContext: {
               userId: state.context.userId || "",
               userEmail: state.context.userEmail || "",

@@ -251,6 +251,30 @@ function normalizeIncomingRequest(request) {
         "invoiceNumber",
       ])
   );
+  const prefetchInvoiceId = pickFirst(
+    source.prefetchInvoiceId ||
+      source.invoiceId ||
+      source.previewInvoiceId ||
+      previewObject.invoiceId ||
+      pickFirstValueFromAny(source, [
+        "prefetchInvoiceId",
+        "previewInvoiceId",
+        "invoiceId",
+      ])
+  );
+  const prefetchInvoiceNumber = pickFirst(
+    source.prefetchInvoiceNumber ||
+      source.invoiceNumberForPreview ||
+      source.previewInvoiceNumber ||
+      source.invoiceNumber ||
+      previewObject.invoiceNumber ||
+      pickFirstValueFromAny(source, [
+        "prefetchInvoiceNumber",
+        "previewInvoiceNumber",
+        "invoiceNumberForPreview",
+        "invoiceNumber",
+      ])
+  );
   const workspaceCandidates = Array.isArray(source.workspaceCandidates)
     ? source.workspaceCandidates
     : pickFirstArrayFromAny(source, ["workspaceCandidates"]);
@@ -286,6 +310,8 @@ function normalizeIncomingRequest(request) {
     previewInvoiceId: invoiceId,
     invoiceNumberForPreview,
     previewInvoiceNumber: invoiceNumberForPreview,
+    prefetchInvoiceId,
+    prefetchInvoiceNumber,
     previewSourceProjectId: pickFirst(
       source.previewSourceProjectId ||
         pickFirstValueFromAny(source, ["previewSourceProjectId"])

@@ -17,6 +17,7 @@
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
   const PREVIEW_PDF_ONLY_TIMEOUT_MS = 12000;
+  const PREVIEW_PDF_ONLY_HARD_TIMEOUT_MS = 30000;
   const PREVIEW_PDF_ONLY_RETRY_DELAY_MS = 150;
   const FIELD_ALIAS_GROUPS = {
     accountName: ["account"],
@@ -107,7 +108,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-clockwork-native-speed-20260812t";
+  window.__invoiceAccessBuild = "preview-late-success-recovery-20260812u";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4265,28 +4266,53 @@
         setModalPdfFrameSrc(preloadedPdfDataUrl);
         return;
       }
-      const serverPdfOnlyPreview = await withTimeout(
-        fetchInvoicePreviewPdfOnlyFromServerAction(targetInvoice),
-        PREVIEW_PDF_ONLY_TIMEOUT_MS,
-        "Server preview PDF request timed out"
-      ).catch((error) => {
+      const serverPdfOnlyPromise = fetchInvoicePreviewPdfOnlyFromServerAction(targetInvoice);
+      let serverPdfOnlyPreview = null;
+      let softTimeoutHit = false;
+      try {
+        serverPdfOnlyPreview = await withTimeout(
+          serverPdfOnlyPromise,
+          PREVIEW_PDF_ONLY_TIMEOUT_MS,
+          "Server preview PDF request timed out"
+        );
+      } catch (error) {
+        softTimeoutHit = true;
         setPreviewProbe({
           invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
           invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
-          outcome: "server-pdf-only-timeout",
+          outcome: "server-pdf-only-soft-timeout",
           error: simplifyError(error),
         });
-        return null;
-      });
+      }
+      if (!serverPdfOnlyPreview && softTimeoutHit) {
+        try {
+          serverPdfOnlyPreview = await withTimeout(
+            serverPdfOnlyPromise,
+            PREVIEW_PDF_ONLY_HARD_TIMEOUT_MS,
+            "Server preview PDF hard timeout"
+          );
+          if (serverPdfOnlyPreview) {
+            setPreviewProbe({
+              invoiceId:
+                pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) ||
+                pickFirst(targetInvoice.invoiceId || targetInvoice.id) ||
+                "",
+              invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
+              outcome: "server-pdf-only-late-success",
+            });
+          }
+        } catch (error) {
+          setPreviewProbe({
+            invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
+            invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
+            outcome: "server-pdf-only-hard-timeout",
+            error: simplifyError(error),
+          });
+          serverPdfOnlyPreview = null;
+        }
+      }
       const serverPdfOnlyDataUrl = normalizePreviewPdfDataUrl(serverPdfOnlyPreview || {});
-      const serverPdfOnlyBytes = serverPdfOnlyDataUrl
-        ? pdfDataUrlToBytes(serverPdfOnlyDataUrl)
-        : null;
-      if (
-        serverPdfOnlyDataUrl &&
-        (looksLikePdfBytes(serverPdfOnlyBytes) ||
-          serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
-      ) {
+      if (serverPdfOnlyDataUrl) {
         setPreviewDebugState("server-pdf-only", {
           invoiceNumber: targetInvoice.invoiceNumber || "",
           previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
@@ -4312,7 +4338,7 @@
       if (
         previewPdfDataUrl &&
         (looksLikePdfBytes(previewPdfBytes) ||
-          previewPdfDataUrl.startsWith("data:application/pdf"))
+          /^data:application\/pdf/i.test(previewPdfDataUrl))
       ) {
         setPreviewDebugState("server-preview-pdf", {
           invoiceNumber: targetInvoice.invoiceNumber || "",

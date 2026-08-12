@@ -68,6 +68,229 @@ function pickFirst(value) {
   return "";
 }
 
+function parseJsonObject(value) {
+  const text = String(value || "").trim();
+  if (!text || (text[0] !== "{" && text[0] !== "[")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function collectNestedCandidates(value, maxDepth) {
+  const limit = Number(maxDepth || 6);
+  const queue = [{ node: value, depth: 0 }];
+  const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+  const out = [];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    const node = current.node;
+    const depth = Number(current.depth || 0);
+    if (depth > limit || node == null) {
+      continue;
+    }
+    if (typeof node === "string") {
+      const parsed = parseJsonObject(node);
+      if (parsed) {
+        queue.push({ node: parsed, depth: depth + 1 });
+      }
+      continue;
+    }
+    if (typeof node !== "object") {
+      continue;
+    }
+    if (visited) {
+      if (visited.has(node)) {
+        continue;
+      }
+      visited.add(node);
+    }
+    out.push(node);
+    if (Array.isArray(node)) {
+      node.forEach((item) => queue.push({ node: item, depth: depth + 1 }));
+      continue;
+    }
+    Object.keys(node).forEach((key) => {
+      queue.push({ node: node[key], depth: depth + 1 });
+    });
+  }
+  return out;
+}
+
+function pickFirstValueFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return "";
+  }
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    for (let j = 0; j < searchKeys.length; j += 1) {
+      const key = searchKeys[j];
+      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+        continue;
+      }
+      const value = pickFirst(node[key]);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return "";
+}
+
+function pickFirstArrayFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return [];
+  }
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    for (let j = 0; j < searchKeys.length; j += 1) {
+      const key = searchKeys[j];
+      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+        continue;
+      }
+      const value = node[key];
+      if (Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+  return [];
+}
+
+function pickFirstObjectFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return null;
+  }
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    for (let j = 0; j < searchKeys.length; j += 1) {
+      const key = searchKeys[j];
+      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+        continue;
+      }
+      const value = node[key];
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function parseBooleanFromAny(root, keys, fallback) {
+  const defaultValue = Boolean(fallback);
+  const direct = pickFirstValueFromAny(root, keys);
+  if (!direct) {
+    return defaultValue;
+  }
+  const normalized = String(direct).trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+  return defaultValue;
+}
+
+function normalizeIncomingRequest(request) {
+  const source = request && typeof request === "object" ? request : {};
+  const previewObject = pickFirstObjectFromAny(source, ["preview"]) || {};
+  const viewerContext = mergeObjects(
+    pickFirstObjectFromAny(source, ["viewerContext"]) || {},
+    source.viewerContext && typeof source.viewerContext === "object" ? source.viewerContext : {}
+  );
+  const invoiceId = pickFirst(
+    source.previewInvoiceId ||
+      source.invoiceId ||
+      previewObject.invoiceId ||
+      pickFirstValueFromAny(source, ["previewInvoiceId", "invoiceId"])
+  );
+  const invoiceNumberForPreview = pickFirst(
+    source.previewInvoiceNumber ||
+      source.invoiceNumberForPreview ||
+      source.invoiceNumber ||
+      previewObject.invoiceNumber ||
+      pickFirstValueFromAny(source, [
+        "previewInvoiceNumber",
+        "invoiceNumberForPreview",
+        "invoiceNumber",
+      ])
+  );
+  const workspaceCandidates = Array.isArray(source.workspaceCandidates)
+    ? source.workspaceCandidates
+    : pickFirstArrayFromAny(source, ["workspaceCandidates"]);
+  return mergeObjects(source, {
+    requestMode: pickFirst(
+      source.requestMode ||
+        source.mode ||
+        pickFirstValueFromAny(source, ["requestMode", "mode"])
+    ),
+    mode: pickFirst(
+      source.mode || source.requestMode || pickFirstValueFromAny(source, ["mode", "requestMode"])
+    ),
+    workspaceBaseUrl: pickFirst(
+      source.workspaceBaseUrl ||
+        source.workspaceUrl ||
+        pickFirstValueFromAny(source, ["workspaceBaseUrl", "workspaceUrl"])
+    ),
+    workspaceCandidates,
+    apiBaseUrl: pickFirst(
+      source.apiBaseUrl || pickFirstValueFromAny(source, ["apiBaseUrl"])
+    ),
+    apiToken: pickFirst(
+      source.apiToken ||
+        pickFirstValueFromAny(source, ["apiToken", "rocketlaneApiToken", "apiKey"])
+    ),
+    accountName: pickFirst(
+      source.accountName || pickFirstValueFromAny(source, ["accountName"])
+    ),
+    searchQuery: pickFirst(
+      source.searchQuery || pickFirstValueFromAny(source, ["searchQuery"])
+    ),
+    invoiceId,
+    previewInvoiceId: invoiceId,
+    invoiceNumberForPreview,
+    previewInvoiceNumber: invoiceNumberForPreview,
+    previewSourceProjectId: pickFirst(
+      source.previewSourceProjectId ||
+        pickFirstValueFromAny(source, ["previewSourceProjectId"])
+    ),
+    searchOnly:
+      source.searchOnly === true || parseBooleanFromAny(source, ["searchOnly"], false),
+    prefetchPreviewPdfs:
+      source.prefetchPreviewPdfs === true ||
+      parseBooleanFromAny(source, ["prefetchPreviewPdfs"], false),
+    viewerContext,
+    preview: mergeObjects(previewObject, {
+      invoiceId: pickFirst(previewObject.invoiceId || invoiceId),
+      invoiceNumber: pickFirst(previewObject.invoiceNumber || invoiceNumberForPreview),
+    }),
+  });
+}
+
 function fullName(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -2850,6 +3073,7 @@ function resolveViewerFromMembers(baseViewer, members, request) {
 
 module.exports = {
   syncInvoicesFromSource: async (request = {}, context = {}) => {
+    request = normalizeIncomingRequest(request);
     const installation = context.installation || {};
     const iParams = installation.iparams || {};
     const secureParams = installation.secureParams || {};

@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-signed-url-only-20260812d";
+  window.__invoiceAccessBuild = "preview-request-normalized-20260812e";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1256,7 +1256,9 @@
       });
       const workspaceCandidates = getWorkspaceCandidates();
       const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
-      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        wrapServerActionRequestPayload({
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
         apiBaseUrl: SERVER_ACTION_API_BASE_URL,
@@ -1274,7 +1276,8 @@
             "",
           workspaceBaseUrl,
         },
-      });
+        })
+      );
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
         if (result && result.error) {
@@ -1423,6 +1426,19 @@
         null;
     }
     return null;
+  }
+
+  function wrapServerActionRequestPayload(payload) {
+    const core = payload && typeof payload === "object" ? payload : {};
+    const nested = Object.assign({}, core);
+    return Object.assign({}, core, {
+      request: nested,
+      data: Object.assign({}, nested),
+      payload: Object.assign({}, nested),
+      input: Object.assign({}, nested),
+      args: Object.assign({}, nested),
+      body: Object.assign({}, nested),
+    });
   }
 
   function normalizePdfDataUrl(value) {
@@ -4090,7 +4106,9 @@
     const workspaceCandidates = getWorkspaceCandidates();
     const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     try {
-      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        wrapServerActionRequestPayload({
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
         workspaceBaseUrl,
@@ -4108,7 +4126,8 @@
             "",
           workspaceBaseUrl,
         },
-      });
+        })
+      );
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
         return null;
@@ -4890,7 +4909,7 @@
       try {
         const payload = await state.client.data.invoke(
           "syncInvoicesFromSource",
-          Object.assign({}, baseRequest, attempt)
+          wrapServerActionRequestPayload(Object.assign({}, baseRequest, attempt))
         );
         const directPreview = extractPreviewFromServerActionPayload(payload);
         const directHasPdf = hasPreviewPdfDataUrl(directPreview);
@@ -5006,7 +5025,9 @@
         invoiceNumber: previewInvoiceNumber || "",
         outcome: "server-pdf-only-start",
       });
-      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        wrapServerActionRequestPayload({
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
@@ -5030,7 +5051,8 @@
             "",
           workspaceBaseUrl,
         },
-      });
+        })
+      );
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
       if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
         setPreviewProbe({

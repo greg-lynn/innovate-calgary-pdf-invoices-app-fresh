@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-prefetch-field-alias-fix-20260812m";
+  window.__invoiceAccessBuild = "preview-payload-candidate-match-20260812n";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5080,6 +5080,103 @@
     };
   }
 
+  function collectInvoiceCandidatesFromPayload(payload) {
+    const queue = [payload];
+    const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+    const candidates = [];
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (parsed) {
+          queue.push(parsed);
+        }
+        continue;
+      }
+      if (typeof current !== "object") {
+        continue;
+      }
+      if (visited) {
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+      }
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i += 1) {
+          queue.push(current[i]);
+        }
+        continue;
+      }
+      const maybeInvoiceId = pickFirst(
+        current.invoiceId || current.id || current.invoiceID || current._id
+      );
+      const maybeInvoiceNumber = pickFirst(
+        current.invoiceNumber || current.invoiceNo || current.number
+      );
+      const hasPreviewField =
+        typeof current.previewPdfDataUrl === "string" ||
+        typeof current.previewPdfBase64 === "string" ||
+        typeof current.previewPdfUrl === "string" ||
+        typeof current.pdfDataUrl === "string" ||
+        typeof current.pdfBase64 === "string" ||
+        typeof current.pdfUrl === "string";
+      if ((maybeInvoiceId || maybeInvoiceNumber) && hasPreviewField) {
+        candidates.push(current);
+      }
+      const nested = [
+        current.data,
+        current.response,
+        current.result,
+        current.payload,
+        current.body,
+        current.item,
+        current.value,
+        current.invoices,
+        current.items,
+        current.results,
+        current.content,
+      ];
+      const keys = Object.keys(current);
+      for (let i = 0; i < keys.length; i += 1) {
+        nested.push(current[keys[i]]);
+      }
+      for (let i = 0; i < nested.length; i += 1) {
+        if (nested[i] !== undefined) {
+          queue.push(nested[i]);
+        }
+      }
+    }
+    return candidates;
+  }
+
+  function extractTargetPreviewPdfFromPayload(payload, previewInvoiceId, previewInvoiceNumber) {
+    const candidates = collectInvoiceCandidatesFromPayload(payload);
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (!invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)) {
+        continue;
+      }
+      const pdfDataUrl = normalizePreviewPdfDataUrl(candidate);
+      const pdfUrl = normalizePreviewPdfUrl(candidate);
+      if (!pdfDataUrl && !pdfUrl) {
+        continue;
+      }
+      return {
+        invoiceId: pickFirst(candidate.invoiceId || candidate.id || previewInvoiceId),
+        invoiceNumber: pickFirst(candidate.invoiceNumber || previewInvoiceNumber),
+        pdfDataUrl,
+        pdfBase64: pickFirst(candidate.previewPdfBase64 || candidate.pdfBase64 || ""),
+        pdfSource: pickFirst(candidate.previewPdfSource || candidate.pdfSource || ""),
+        pdfUrl,
+      };
+    }
+    return null;
+  }
+
   async function fetchInvoicePreviewPdfOnlyFromServerAction(invoice) {
     if (
       !state.connected ||
@@ -5198,6 +5295,27 @@
           });
           return directPdf;
         }
+      }
+      const matchedFromPayload = extractTargetPreviewPdfFromPayload(
+        payload,
+        previewInvoiceId,
+        previewInvoiceNumber
+      );
+      if (matchedFromPayload) {
+        setPreviewProbe({
+          invoiceId: matchedFromPayload.invoiceId || "",
+          invoiceNumber: matchedFromPayload.invoiceNumber || "",
+          outcome: "server-pdf-only-success-from-payload-candidates",
+          hasDataUrl: Boolean(matchedFromPayload.pdfDataUrl),
+          hasSignedUrl: Boolean(matchedFromPayload.pdfUrl),
+        });
+        return {
+          invoiceId: matchedFromPayload.invoiceId,
+          pdfDataUrl: matchedFromPayload.pdfDataUrl,
+          pdfBase64: matchedFromPayload.pdfBase64 || "",
+          pdfSource: matchedFromPayload.pdfSource || "",
+          pdfUrl: matchedFromPayload.pdfUrl || "",
+        };
       }
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {

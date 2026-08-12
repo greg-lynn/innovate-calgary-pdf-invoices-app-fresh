@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-dedicated-action-20260812g";
+  window.__invoiceAccessBuild = "preview-dedicated-action-20260812j";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -115,6 +115,32 @@
     previewProbe: null,
     previewLast: null,
   };
+
+  function publishDebugToHostWindows() {
+    try {
+      window.__invoiceAccessBuild = window.__invoiceAccessBuild || "";
+      window.__invoiceAccessDebug = window.__invoiceAccessDebug || {};
+      const targets = [];
+      if (window.top && window.top !== window) {
+        targets.push(window.top);
+      }
+      if (window.parent && window.parent !== window) {
+        targets.push(window.parent);
+      }
+      targets.forEach((target) => {
+        try {
+          target.__invoiceAccessBuild = window.__invoiceAccessBuild;
+          target.__invoiceAccessDebug = window.__invoiceAccessDebug;
+        } catch (_error) {
+          // Ignore cross-context assignment failures.
+        }
+      });
+    } catch (_error) {
+      // Ignore host debug publishing failures.
+    }
+  }
+
+  publishDebugToHostWindows();
 
   const refs = {};
 
@@ -3850,6 +3876,7 @@
           details || {}
         ),
       });
+      publishDebugToHostWindows();
     } catch (_error) {
       // Ignore debug state errors.
     }
@@ -3865,6 +3892,7 @@
           details || null
         ),
       });
+      publishDebugToHostWindows();
     } catch (_error) {
       // Ignore debug probe errors.
     }
@@ -5050,9 +5078,7 @@
         invoiceNumber: previewInvoiceNumber || "",
         outcome: "server-pdf-only-start",
       });
-      const payload = await state.client.data.invoke(
-        "syncInvoicePreviewPayload",
-        wrapServerActionRequestPayload({
+      const requestPayload = wrapServerActionRequestPayload({
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
@@ -5076,8 +5102,22 @@
             "",
           workspaceBaseUrl,
         },
-        })
-      );
+      });
+      let payload = null;
+      try {
+        payload = await state.client.data.invoke(
+          "syncInvoicePreviewPayload",
+          requestPayload
+        );
+      } catch (previewActionError) {
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          invoiceNumber: previewInvoiceNumber || "",
+          outcome: "server-pdf-only-preview-action-fallback",
+          error: simplifyError(previewActionError),
+        });
+        payload = await state.client.data.invoke("syncInvoicesFromSource", requestPayload);
+      }
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
       if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
         const directMatchesTarget = invoiceMatchesPreviewTarget(
@@ -5091,15 +5131,15 @@
         if (!directMatchesTarget && previewInvoiceId) {
           // Continue parsing structured payload to avoid rendering the wrong invoice PDF.
         } else {
-        setPreviewProbe({
-          invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
-          invoiceNumber: previewInvoiceNumber || "",
-          outcome: "server-pdf-only-success",
-          source: pickFirst(directPdf.pdfSource || ""),
-          hasDataUrl: Boolean(directPdf.pdfDataUrl),
-          hasSignedUrl: Boolean(directPdf.pdfUrl),
-        });
-        return directPdf;
+          setPreviewProbe({
+            invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
+            invoiceNumber: previewInvoiceNumber || "",
+            outcome: "server-pdf-only-success",
+            source: pickFirst(directPdf.pdfSource || ""),
+            hasDataUrl: Boolean(directPdf.pdfDataUrl),
+            hasSignedUrl: Boolean(directPdf.pdfUrl),
+          });
+          return directPdf;
         }
       }
       const result = unwrapServerActionResponse(payload);
@@ -6804,6 +6844,7 @@
       previewProbe: previous.previewProbe || null,
       previewLast: previous.previewLast || null,
     };
+    publishDebugToHostWindows();
   }
 
   function mergeObjects(a, b) {

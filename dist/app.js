@@ -17,6 +17,7 @@
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 6;
   const PREVIEW_FETCH_TIMEOUT_MS = 18000;
+  const PREVIEW_PDF_ONLY_TIMEOUT_MS = 35000;
   const FIELD_ALIAS_GROUPS = {
     accountName: ["account"],
     createdBy: ["created by", "createdby", "creator"],
@@ -106,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-server-workspace-fallback-20260811i";
+  window.__invoiceAccessBuild = "preview-server-deterministic-20260812a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -4096,6 +4097,44 @@
         setModalPdfFrameSrc(preloadedPdfDataUrl);
         return;
       }
+      const serverPdfOnlyPreview = await withTimeout(
+        fetchInvoicePreviewPdfOnlyFromServerAction(invoice),
+        PREVIEW_PDF_ONLY_TIMEOUT_MS,
+        "Server preview PDF request timed out"
+      ).catch((error) => {
+        setPreviewProbe({
+          invoiceId: pickFirst(invoice && (invoice.invoiceId || invoice.id)) || "",
+          invoiceNumber: pickFirst(invoice && invoice.invoiceNumber) || "",
+          outcome: "server-pdf-only-timeout",
+          error: simplifyError(error),
+        });
+        return null;
+      });
+      const serverPdfOnlyDataUrl = normalizePreviewPdfDataUrl(serverPdfOnlyPreview || {});
+      const serverPdfOnlyBytes = serverPdfOnlyDataUrl
+        ? pdfDataUrlToBytes(serverPdfOnlyDataUrl)
+        : null;
+      if (
+        serverPdfOnlyDataUrl &&
+        (looksLikePdfBytes(serverPdfOnlyBytes) ||
+          serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
+      ) {
+        setPreviewDebugState("server-pdf-only", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
+        });
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: cached && cached.preview ? cached.preview : null,
+            pdfDataUrl: serverPdfOnlyDataUrl,
+            isNativePdf: true,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(serverPdfOnlyDataUrl);
+        return;
+      }
       const preview =
         (cached && cached.preview) ||
         (await withTimeout(
@@ -4129,96 +4168,9 @@
         setModalPdfFrameSrc(previewPdfDataUrl);
         return;
       }
-      const resolvedPreviewInvoiceId = pickFirst(
-        preview &&
-          typeof preview === "object" &&
-          (preview.invoiceId || preview.id || preview.invoiceID)
-      );
-      const currentPreviewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
-      let previewForFallback = preview || null;
-      let nativePreviewInvoiceId =
-        pickFirst(resolvedPreviewInvoiceId) || pickFirst(currentPreviewInvoiceId) || "";
-      if (resolvedPreviewInvoiceId && resolvedPreviewInvoiceId !== currentPreviewInvoiceId) {
-        const resolvedPreview = await withTimeout(
-          fetchInvoicePreviewFromServerAction(
-            mergeObjects(invoice || {}, { invoiceId: resolvedPreviewInvoiceId })
-          ),
-          PREVIEW_FETCH_TIMEOUT_MS,
-          "Resolved invoice preview request timed out"
-        ).catch(() => null);
-        const resolvedPreviewPdfDataUrl = normalizePreviewPdfDataUrl(resolvedPreview || {});
-        const resolvedPreviewPdfBytes = resolvedPreviewPdfDataUrl
-          ? pdfDataUrlToBytes(resolvedPreviewPdfDataUrl)
-          : null;
-        if (
-          resolvedPreviewPdfDataUrl &&
-          (looksLikePdfBytes(resolvedPreviewPdfBytes) ||
-            resolvedPreviewPdfDataUrl.startsWith("data:application/pdf"))
-        ) {
-          setPreviewDebugState("resolved-server-preview", {
-            invoiceNumber: invoice.invoiceNumber || "",
-            previewPdfSource:
-              (resolvedPreview && typeof resolvedPreview === "object"
-                ? pickFirst(resolvedPreview.pdfSource)
-                : "") || "",
-          });
-          if (cacheKey) {
-            state.invoicePreviewCache[cacheKey] = {
-              preview: resolvedPreview || null,
-              pdfDataUrl: resolvedPreviewPdfDataUrl,
-              isNativePdf: true,
-            };
-          }
-          refs.modalPdfFrame.classList.remove("hidden");
-          refs.modalInvoicePreview.classList.add("hidden");
-          setModalPdfFrameSrc(resolvedPreviewPdfDataUrl);
-          return;
-        }
-        if (resolvedPreview && typeof resolvedPreview === "object") {
-          previewForFallback = resolvedPreview;
-          nativePreviewInvoiceId =
-            pickFirst(
-              resolvedPreview.invoiceId || resolvedPreview.id || resolvedPreview.invoiceID
-            ) || nativePreviewInvoiceId;
-        }
-      }
-      const serverPdfOnlyPreview = await withTimeout(
-        fetchInvoicePreviewPdfOnlyFromServerAction(
-          mergeObjects(invoice || {}, {
-            invoiceId: nativePreviewInvoiceId || pickFirst(invoice && (invoice.invoiceId || invoice.id)),
-          })
-        ),
-        PREVIEW_FETCH_TIMEOUT_MS,
-        "Server preview PDF request timed out"
-      ).catch(() => null);
-      const serverPdfOnlyDataUrl = normalizePreviewPdfDataUrl(serverPdfOnlyPreview || {});
-      const serverPdfOnlyBytes = serverPdfOnlyDataUrl
-        ? pdfDataUrlToBytes(serverPdfOnlyDataUrl)
-        : null;
-      if (
-        serverPdfOnlyDataUrl &&
-        (looksLikePdfBytes(serverPdfOnlyBytes) ||
-          serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
-      ) {
-        setPreviewDebugState("server-pdf-only", {
-          invoiceNumber: invoice.invoiceNumber || "",
-          previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
-        });
-        if (cacheKey) {
-          state.invoicePreviewCache[cacheKey] = {
-            preview: previewForFallback || null,
-            pdfDataUrl: serverPdfOnlyDataUrl,
-            isNativePdf: true,
-          };
-        }
-        refs.modalPdfFrame.classList.remove("hidden");
-        refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(serverPdfOnlyDataUrl);
-        return;
-      }
       setPreviewDebugState("server-pdf-only-miss", {
         invoiceNumber: invoice.invoiceNumber || "",
-        resolvedInvoiceId: nativePreviewInvoiceId || "",
+        resolvedInvoiceId: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) || "",
       });
       appendLog(
         "PDF_PREVIEW_FAILED",
@@ -4234,7 +4186,7 @@
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
         invoice,
-        previewForFallback,
+        preview || null,
         false,
         "Unable to load native invoice PDF preview right now. This app now blocks mock fallback previews."
       );
@@ -4909,6 +4861,11 @@
     const workspaceCandidates = getWorkspaceCandidates();
     const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     try {
+      setPreviewProbe({
+        invoiceId: previewInvoiceId || "",
+        invoiceNumber: previewInvoiceNumber || "",
+        outcome: "server-pdf-only-start",
+      });
       const payload = await state.client.data.invoke("syncInvoicesFromSource", {
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
@@ -4936,6 +4893,12 @@
       });
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
       if (directPdf && directPdf.pdfDataUrl) {
+        setPreviewProbe({
+          invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
+          invoiceNumber: previewInvoiceNumber || "",
+          outcome: "server-pdf-only-success",
+          source: pickFirst(directPdf.pdfSource || ""),
+        });
         return directPdf;
       }
       const result = unwrapServerActionResponse(payload);
@@ -4957,6 +4920,12 @@
         });
         return null;
       }
+      setPreviewProbe({
+        invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId) || "",
+        invoiceNumber: previewInvoiceNumber || "",
+        outcome: "server-pdf-only-success",
+        source: pickFirst(previewPdf.pdfSource || ""),
+      });
       return {
         invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId),
         pdfDataUrl,

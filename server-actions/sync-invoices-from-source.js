@@ -885,6 +885,9 @@ function extractLikelyPdfUrlFromBytes(bytes) {
     return text;
   }
   const parsed = parseJsonSafe(text);
+  if (typeof parsed === "string" && /^https?:\/\/\S+/i.test(parsed.trim())) {
+    return parsed.trim();
+  }
   if (parsed && typeof parsed === "object") {
     const fromObject = extractLikelyUrlFromObject(parsed);
     if (fromObject) {
@@ -1327,8 +1330,11 @@ async function resolveInvoiceIdForPreview(
   headers,
   previewInvoiceId,
   previewInvoiceNumber,
-  previewSourceProjectId
+  previewSourceProjectId,
+  options
 ) {
+  const settings = options && typeof options === "object" ? options : {};
+  const skipCollectionFallback = settings.skipCollectionFallback === true;
   const explicitId = pickFirst(previewInvoiceId);
   const targetNumber = canonicalInvoiceNumber(
     previewInvoiceNumber || previewInvoiceId || ""
@@ -1356,7 +1362,7 @@ async function resolveInvoiceIdForPreview(
   } catch (_error) {
     rows = [];
   }
-  if (!rows.length) {
+  if (!rows.length && !skipCollectionFallback) {
     const fallbackLookup = await requestCollection(
       baseUrl,
       headers,
@@ -1405,6 +1411,46 @@ async function resolveInvoiceIdForPreview(
     .sort((a, b) => b.score - a.score);
 
   return (scored[0] && scored[0].invoiceId) || explicitId;
+}
+
+async function requestInvoiceRecordForPreview(baseUrl, headers, previewInvoiceId) {
+  const encodedId = encodeURIComponent(String(previewInvoiceId || "").trim());
+  if (!encodedId) {
+    return {};
+  }
+  try {
+    const payload = await requestJson(
+      ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${encodedId}`),
+      headers
+    );
+    return (
+      extractRecordObject(payload || {}, [
+        "invoice",
+        "data",
+        "result",
+        "payload",
+        "response",
+      ]) || {}
+    );
+  } catch (_error) {
+    try {
+      const payload = await requestJson(
+        ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${encodedId}`),
+        headers
+      );
+      return (
+        extractRecordObject(payload || {}, [
+          "invoice",
+          "data",
+          "result",
+          "payload",
+          "response",
+        ]) || {}
+      );
+    } catch (_fallbackError) {
+      return {};
+    }
+  }
 }
 
 async function requestCollection(baseUrl, headers, paths, preferredKeys) {
@@ -2642,8 +2688,8 @@ module.exports = {
         .filter(Boolean)
     );
     const previewApiBaseCandidates = dedupeStrings([
-      ...workspaceApiBaseCandidates,
       ...apiBaseCandidates,
+      ...workspaceApiBaseCandidates,
     ]);
     const normalizedSearchQuery = String(request.searchQuery || "").trim();
 
@@ -2706,33 +2752,64 @@ module.exports = {
 
     if (isPreviewRequest) {
       if (isPreviewPdfRequest) {
+        const previewPdfAttempts = [];
         for (let i = 0; i < previewApiBaseCandidates.length; i += 1) {
           const baseUrl = previewApiBaseCandidates[i];
           try {
-            const resolvedInvoiceId = await resolveInvoiceIdForPreview(
+            const resolvedInvoiceIdFast = await resolveInvoiceIdForPreview(
               baseUrl,
               headers,
               previewInvoiceIdRequested,
               previewInvoiceNumberRequested,
-              request.previewSourceProjectId
+              request.previewSourceProjectId,
+              { skipCollectionFallback: true }
             );
+            let resolvedInvoiceId = pickFirst(resolvedInvoiceIdFast);
+            if (!resolvedInvoiceId && previewInvoiceNumberRequested) {
+              resolvedInvoiceId = pickFirst(
+                await resolveInvoiceIdForPreview(
+                  baseUrl,
+                  headers,
+                  previewInvoiceIdRequested,
+                  previewInvoiceNumberRequested,
+                  request.previewSourceProjectId
+                )
+              );
+            }
             const previewInvoiceIds = dedupeStrings([
-              pickFirst(resolvedInvoiceId),
               previewInvoiceIdRequested,
-            ])
-              .map((value) => encodeURIComponent(String(value || "").trim()))
-              .filter(Boolean);
+              pickFirst(resolvedInvoiceId),
+            ]).filter(Boolean);
             if (!previewInvoiceIds.length) {
               throw new Error("Invoice ID could not be resolved for preview PDF.");
             }
             for (let candidateIdx = 0; candidateIdx < previewInvoiceIds.length; candidateIdx += 1) {
-              const previewInvoiceId = previewInvoiceIds[candidateIdx];
-              const previewPdf = await fetchPreviewPdfData(baseUrl, headers, previewInvoiceId);
+              const previewInvoiceId = pickFirst(previewInvoiceIds[candidateIdx]);
+              if (!previewInvoiceId) {
+                continue;
+              }
+              const invoiceRecord = await requestInvoiceRecordForPreview(
+                baseUrl,
+                headers,
+                previewInvoiceId
+              );
+              const previewPdf = await fetchPreviewPdfData(
+                baseUrl,
+                headers,
+                encodeURIComponent(previewInvoiceId),
+                invoiceRecord
+              );
               if (previewPdf && previewPdf.pdfDataUrl) {
+                previewPdfAttempts.push({
+                  baseUrl,
+                  invoiceId: previewInvoiceId,
+                  outcome: "success",
+                  source: previewPdf.pdfSource || "",
+                });
                 return {
                   ok: true,
                   previewPdf: {
-                    invoiceId: decodeURIComponent(previewInvoiceId),
+                    invoiceId: previewInvoiceId,
                     pdfDataUrl: previewPdf.pdfDataUrl,
                     pdfBase64: previewPdf.pdfBase64 || "",
                     pdfSource: previewPdf.pdfSource || "",
@@ -2740,14 +2817,26 @@ module.exports = {
                   viewer,
                   diagnostics: mergeObjects(diagnostics, {
                     apiBaseUsed: baseUrl,
-                    previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
+                    previewInvoiceResolvedId: previewInvoiceId,
                     previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
                     previewPdfRequest: true,
+                    previewPdfAttempts,
                   }),
                 };
               }
+              previewPdfAttempts.push({
+                baseUrl,
+                invoiceId: previewInvoiceId,
+                outcome: "no-pdf",
+              });
             }
           } catch (error) {
+            previewPdfAttempts.push({
+              baseUrl,
+              invoiceId: "",
+              outcome: "error",
+              error: String(error && error.message ? error.message : error),
+            });
             diagnostics.invoiceErrors.push(
               String(error && error.message ? error.message : error)
             );
@@ -2758,7 +2847,7 @@ module.exports = {
           error: "Unable to load invoice preview PDF.",
           previewPdf: null,
           viewer,
-          diagnostics,
+          diagnostics: mergeObjects(diagnostics, { previewPdfAttempts }),
         };
       }
       let previewFallbackResponse = null;

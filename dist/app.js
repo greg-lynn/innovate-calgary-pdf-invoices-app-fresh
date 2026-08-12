@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-dedicated-action-20260812j";
+  window.__invoiceAccessBuild = "preview-prefetch-fallback-20260812k";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5046,6 +5046,29 @@
     return fallbackPreview;
   }
 
+  function extractTargetPreviewPdfFromInvoices(invoices, previewInvoiceId, previewInvoiceNumber) {
+    const rows = Array.isArray(invoices) ? invoices : [];
+    const matchedInvoice = rows.find((candidate) =>
+      invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)
+    );
+    if (!matchedInvoice) {
+      return null;
+    }
+    const matchedPdfDataUrl = normalizePreviewPdfDataUrl(matchedInvoice);
+    const matchedPdfUrl = normalizePreviewPdfUrl(matchedInvoice);
+    if (!matchedPdfDataUrl && !matchedPdfUrl) {
+      return null;
+    }
+    return {
+      invoiceId: pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId),
+      invoiceNumber: pickFirst(matchedInvoice.invoiceNumber || previewInvoiceNumber),
+      pdfDataUrl: matchedPdfDataUrl,
+      pdfBase64: pickFirst(matchedInvoice.previewPdfBase64 || matchedInvoice.pdfBase64 || ""),
+      pdfSource: pickFirst(matchedInvoice.previewPdfSource || matchedInvoice.pdfSource || ""),
+      pdfUrl: matchedPdfUrl,
+    };
+  }
+
   async function fetchInvoicePreviewPdfOnlyFromServerAction(invoice) {
     if (
       !state.connected ||
@@ -5151,42 +5174,90 @@
           error: result && result.error ? String(result.error) : "",
           diagnostics: result && result.diagnostics ? result.diagnostics : null,
         });
-        return null;
       }
-      if (Array.isArray(result.invoices) && result.invoices.length) {
-        const matchedInvoice = result.invoices.find((candidate) =>
-          invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)
-        );
-        if (matchedInvoice) {
-          const matchedPdfDataUrl = normalizePreviewPdfDataUrl(matchedInvoice);
-          const matchedPdfUrl = normalizePreviewPdfUrl(matchedInvoice);
-          if (matchedPdfDataUrl || matchedPdfUrl) {
-            setPreviewProbe({
-              invoiceId:
-                pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId) || "",
-              invoiceNumber:
-                pickFirst(matchedInvoice.invoiceNumber || previewInvoiceNumber) || "",
-              outcome: "server-pdf-only-success-from-invoices",
-              hasDataUrl: Boolean(matchedPdfDataUrl),
-              hasSignedUrl: Boolean(matchedPdfUrl),
-            });
-            return {
-              invoiceId: pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId),
-              pdfDataUrl: matchedPdfDataUrl,
-              pdfBase64: pickFirst(matchedInvoice.previewPdfBase64 || matchedInvoice.pdfBase64 || ""),
-              pdfSource: pickFirst(matchedInvoice.previewPdfSource || matchedInvoice.pdfSource || ""),
-              pdfUrl: matchedPdfUrl,
-            };
-          }
-        }
+      const matchedFromResult = extractTargetPreviewPdfFromInvoices(
+        result && result.invoices,
+        previewInvoiceId,
+        previewInvoiceNumber
+      );
+      if (matchedFromResult) {
+        setPreviewProbe({
+          invoiceId: matchedFromResult.invoiceId || "",
+          invoiceNumber: matchedFromResult.invoiceNumber || "",
+          outcome: "server-pdf-only-success-from-invoices",
+          hasDataUrl: Boolean(matchedFromResult.pdfDataUrl),
+          hasSignedUrl: Boolean(matchedFromResult.pdfUrl),
+        });
+        return {
+          invoiceId: matchedFromResult.invoiceId,
+          pdfDataUrl: matchedFromResult.pdfDataUrl,
+          pdfBase64: matchedFromResult.pdfBase64 || "",
+          pdfSource: matchedFromResult.pdfSource || "",
+          pdfUrl: matchedFromResult.pdfUrl || "",
+        };
       }
-      const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : {};
+      const previewPdf =
+        result && result.previewPdf && typeof result.previewPdf === "object"
+          ? result.previewPdf
+          : {};
       const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);
       const pdfUrl = normalizePreviewPdfUrl(previewPdf);
       if (!pdfDataUrl && !pdfUrl) {
+        let fallbackError = "";
+        try {
+          const prefetchPayload = wrapServerActionRequestPayload({
+            sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+            accountName: state.context.accountName || "",
+            workspaceBaseUrl,
+            workspaceCandidates,
+            prefetchPreviewPdfs: true,
+            prefetchInvoiceId: previewInvoiceId,
+            prefetchInvoiceNumber: previewInvoiceNumber,
+            viewerContext: {
+              userId: state.context.userId || "",
+              userEmail: state.context.userEmail || "",
+              userRole: state.context.userRole || "",
+              userName: state.context.userName || "",
+              permission:
+                (state.permissionHint && state.permissionHint.permission) ||
+                state.access.permission ||
+                "",
+              workspaceBaseUrl,
+            },
+          });
+          const fallbackPayload = await state.client.data.invoke(
+            "syncInvoicesFromSource",
+            prefetchPayload
+          );
+          const fallbackResult = unwrapServerActionResponse(fallbackPayload);
+          const matchedFromFallback = extractTargetPreviewPdfFromInvoices(
+            fallbackResult && fallbackResult.invoices,
+            previewInvoiceId,
+            previewInvoiceNumber
+          );
+          if (matchedFromFallback) {
+            setPreviewProbe({
+              invoiceId: matchedFromFallback.invoiceId || "",
+              invoiceNumber: matchedFromFallback.invoiceNumber || "",
+              outcome: "server-pdf-only-success-from-prefetch-fallback",
+              hasDataUrl: Boolean(matchedFromFallback.pdfDataUrl),
+              hasSignedUrl: Boolean(matchedFromFallback.pdfUrl),
+            });
+            return {
+              invoiceId: matchedFromFallback.invoiceId,
+              pdfDataUrl: matchedFromFallback.pdfDataUrl,
+              pdfBase64: matchedFromFallback.pdfBase64 || "",
+              pdfSource: matchedFromFallback.pdfSource || "",
+              pdfUrl: matchedFromFallback.pdfUrl || "",
+            };
+          }
+        } catch (prefetchError) {
+          fallbackError = simplifyError(prefetchError);
+        }
         setPreviewProbe({
           invoiceId: previewInvoiceId || "",
           outcome: "server-pdf-only-no-pdf",
+          fallbackError,
           diagnostics: result && result.diagnostics ? result.diagnostics : null,
         });
         return null;

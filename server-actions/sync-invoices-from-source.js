@@ -3619,6 +3619,7 @@ module.exports = {
       const targetPreviewInvoiceId = pickFirst(
         request.previewInvoiceId ||
           request.invoiceId ||
+          request.prefetchInvoiceId ||
           (request.preview && request.preview.invoiceId)
       );
       const targetPreviewInvoiceNumber = canonicalInvoiceNumber(
@@ -3626,6 +3627,7 @@ module.exports = {
           request.previewInvoiceNumber ||
             request.invoiceNumberForPreview ||
             request.invoiceNumber ||
+            request.prefetchInvoiceNumber ||
             (request.preview && request.preview.invoiceNumber)
         )
       );

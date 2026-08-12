@@ -3219,6 +3219,18 @@ module.exports = {
         request.invoiceNumber ||
         (request.preview && request.preview.invoiceNumber)
     );
+    const targetPrefetchInvoiceId = pickFirst(
+      request.prefetchInvoiceId || previewInvoiceIdRequested || request.invoiceId
+    );
+    const targetPrefetchInvoiceNumber = canonicalInvoiceNumber(
+      pickFirst(
+        request.prefetchInvoiceNumber ||
+          request.previewInvoiceNumber ||
+          request.invoiceNumberForPreview ||
+          request.invoiceNumber ||
+          (request.preview && request.preview.invoiceNumber)
+      )
+    );
     const requestMode = String(request.requestMode || request.mode || "").toLowerCase();
     const disablePreviewMode = request.disablePreviewMode === true;
     const isPreviewPdfRequest = requestMode === "preview-pdf";
@@ -3227,12 +3239,20 @@ module.exports = {
       (requestMode === "preview" ||
         isPreviewPdfRequest ||
         Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested));
+    const isTargetedPreviewPrefetchRequest =
+      request.searchOnly !== true &&
+      request.prefetchPreviewPdfs === true &&
+      disablePreviewMode &&
+      Boolean(targetPrefetchInvoiceId || targetPrefetchInvoiceNumber);
     diagnostics.previewRequest = {
       isPreviewRequest,
       disablePreviewMode,
       previewInvoiceIdRequested,
       previewInvoiceNumberRequested,
       requestMode: String(request.requestMode || request.mode || ""),
+      targetedPrefetch: isTargetedPreviewPrefetchRequest,
+      targetPrefetchInvoiceId,
+      targetPrefetchInvoiceNumber,
     };
     const viewer = deriveViewerAccess(request, context);
     let resolvedViewer = viewer;
@@ -3529,15 +3549,33 @@ module.exports = {
           request.accountName || iParams.accountName || ""
         );
         if (normalized) {
+          if (isTargetedPreviewPrefetchRequest) {
+            const normalizedInvoiceId = pickFirst(normalized.invoiceId || normalized.id);
+            const normalizedInvoiceNumber = canonicalInvoiceNumber(
+              pickFirst(normalized.invoiceNumber)
+            );
+            const idMatches =
+              Boolean(targetPrefetchInvoiceId) &&
+              Boolean(normalizedInvoiceId) &&
+              targetPrefetchInvoiceId === normalizedInvoiceId;
+            const numberMatches =
+              Boolean(targetPrefetchInvoiceNumber) &&
+              Boolean(normalizedInvoiceNumber) &&
+              targetPrefetchInvoiceNumber === normalizedInvoiceNumber;
+            if (!idMatches && !numberMatches) {
+              continue;
+            }
+          }
           const invoiceId = encodeURIComponent(
             pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
           );
           if (invoiceId) {
             const targetInvoice = normalized;
             const shouldEnrichFromLines =
-              Number(targetInvoice.quantityHours || 0) <= 0 ||
-              !pickFirst(targetInvoice.hub) ||
-              !pickFirst(targetInvoice.program);
+              !isTargetedPreviewPrefetchRequest &&
+              (Number(targetInvoice.quantityHours || 0) <= 0 ||
+                !pickFirst(targetInvoice.hub) ||
+                !pickFirst(targetInvoice.program));
             if (shouldEnrichFromLines) {
               lineEnrichmentQueue.push({
                 invoiceId,

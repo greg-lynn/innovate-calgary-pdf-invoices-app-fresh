@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-strict-first-retry-20260812p";
+  window.__invoiceAccessBuild = "preview-rate-limit-hardening-20260812q";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1290,7 +1290,7 @@
         apiBaseUrl: SERVER_ACTION_API_BASE_URL,
         workspaceBaseUrl,
         workspaceCandidates,
-        prefetchPreviewPdfs: true,
+        prefetchPreviewPdfs: false,
         viewerContext: {
           userId: state.context.userId || "",
           userEmail: state.context.userEmail || "",

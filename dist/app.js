@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-target-prefetch-normalize-fix-20260812o";
+  window.__invoiceAccessBuild = "preview-strict-first-retry-20260812p";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5209,6 +5209,144 @@
         invoiceNumber: previewInvoiceNumber || "",
         outcome: "server-pdf-only-start",
       });
+      const strictPreviewRequestPayload = wrapServerActionRequestPayload({
+        requestMode: "preview-pdf",
+        sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+        accountName: state.context.accountName || "",
+        workspaceBaseUrl,
+        workspaceCandidates,
+        invoiceId: previewInvoiceId,
+        previewInvoiceId: previewInvoiceId,
+        prefetchInvoiceId: previewInvoiceId,
+        invoiceNumber: previewInvoiceNumber,
+        invoiceNumberForPreview: previewInvoiceNumber,
+        previewInvoiceNumber: previewInvoiceNumber,
+        prefetchInvoiceNumber: previewInvoiceNumber,
+        preview: {
+          invoiceId: previewInvoiceId,
+          invoiceNumber: previewInvoiceNumber,
+        },
+        previewSourceProjectId: pickFirst(invoice && invoice.sourceProjectId),
+        viewerContext: {
+          userId: state.context.userId || "",
+          userEmail: state.context.userEmail || "",
+          userRole: state.context.userRole || "",
+          userName: state.context.userName || "",
+          permission:
+            (state.permissionHint && state.permissionHint.permission) ||
+            state.access.permission ||
+            "",
+          workspaceBaseUrl,
+        },
+      });
+      for (let strictAttempt = 0; strictAttempt < 2; strictAttempt += 1) {
+        try {
+          const strictPayload = await state.client.data.invoke(
+            "syncInvoicesFromSource",
+            strictPreviewRequestPayload
+          );
+          const strictDirectPdf = extractPreviewPdfOnlyFromPayload(strictPayload);
+          if (strictDirectPdf && (strictDirectPdf.pdfDataUrl || strictDirectPdf.pdfUrl)) {
+            const strictMatchesTarget = invoiceMatchesPreviewTarget(
+              {
+                invoiceId: strictDirectPdf.invoiceId,
+                invoiceNumber: previewInvoiceNumber,
+              },
+              previewInvoiceId,
+              previewInvoiceNumber
+            );
+            if (!previewInvoiceId || strictMatchesTarget) {
+              setPreviewProbe({
+                invoiceId: pickFirst(strictDirectPdf.invoiceId || previewInvoiceId) || "",
+                invoiceNumber: previewInvoiceNumber || "",
+                outcome: "server-pdf-only-success-strict",
+                attempt: strictAttempt + 1,
+                source: pickFirst(strictDirectPdf.pdfSource || ""),
+                hasDataUrl: Boolean(strictDirectPdf.pdfDataUrl),
+                hasSignedUrl: Boolean(strictDirectPdf.pdfUrl),
+              });
+              return strictDirectPdf;
+            }
+          }
+          const strictMatchFromPayload = extractTargetPreviewPdfFromPayload(
+            strictPayload,
+            previewInvoiceId,
+            previewInvoiceNumber
+          );
+          if (strictMatchFromPayload && (strictMatchFromPayload.pdfDataUrl || strictMatchFromPayload.pdfUrl)) {
+            setPreviewProbe({
+              invoiceId: strictMatchFromPayload.invoiceId || "",
+              invoiceNumber: strictMatchFromPayload.invoiceNumber || "",
+              outcome: "server-pdf-only-success-strict-payload",
+              attempt: strictAttempt + 1,
+              hasDataUrl: Boolean(strictMatchFromPayload.pdfDataUrl),
+              hasSignedUrl: Boolean(strictMatchFromPayload.pdfUrl),
+            });
+            return {
+              invoiceId: strictMatchFromPayload.invoiceId,
+              pdfDataUrl: strictMatchFromPayload.pdfDataUrl,
+              pdfBase64: strictMatchFromPayload.pdfBase64 || "",
+              pdfSource: strictMatchFromPayload.pdfSource || "",
+              pdfUrl: strictMatchFromPayload.pdfUrl || "",
+            };
+          }
+          const strictResult = unwrapServerActionResponse(strictPayload);
+          const strictMatchFromInvoices = extractTargetPreviewPdfFromInvoices(
+            strictResult && strictResult.invoices,
+            previewInvoiceId,
+            previewInvoiceNumber
+          );
+          if (strictMatchFromInvoices && (strictMatchFromInvoices.pdfDataUrl || strictMatchFromInvoices.pdfUrl)) {
+            setPreviewProbe({
+              invoiceId: strictMatchFromInvoices.invoiceId || "",
+              invoiceNumber: strictMatchFromInvoices.invoiceNumber || "",
+              outcome: "server-pdf-only-success-strict-invoices",
+              attempt: strictAttempt + 1,
+              hasDataUrl: Boolean(strictMatchFromInvoices.pdfDataUrl),
+              hasSignedUrl: Boolean(strictMatchFromInvoices.pdfUrl),
+            });
+            return {
+              invoiceId: strictMatchFromInvoices.invoiceId,
+              pdfDataUrl: strictMatchFromInvoices.pdfDataUrl,
+              pdfBase64: strictMatchFromInvoices.pdfBase64 || "",
+              pdfSource: strictMatchFromInvoices.pdfSource || "",
+              pdfUrl: strictMatchFromInvoices.pdfUrl || "",
+            };
+          }
+          const strictPreviewPdf =
+            strictResult && strictResult.previewPdf && typeof strictResult.previewPdf === "object"
+              ? strictResult.previewPdf
+              : {};
+          const strictPdfDataUrl = normalizePreviewPdfDataUrl(strictPreviewPdf);
+          const strictPdfUrl = normalizePreviewPdfUrl(strictPreviewPdf);
+          if (strictPdfDataUrl || strictPdfUrl) {
+            setPreviewProbe({
+              invoiceId: pickFirst(strictPreviewPdf.invoiceId || previewInvoiceId) || "",
+              invoiceNumber: previewInvoiceNumber || "",
+              outcome: "server-pdf-only-success-strict-result",
+              attempt: strictAttempt + 1,
+              source: pickFirst(strictPreviewPdf.pdfSource || ""),
+              hasDataUrl: Boolean(strictPdfDataUrl),
+              hasSignedUrl: Boolean(strictPdfUrl),
+            });
+            return {
+              invoiceId: pickFirst(strictPreviewPdf.invoiceId || previewInvoiceId),
+              pdfDataUrl: strictPdfDataUrl,
+              pdfBase64: pickFirst(strictPreviewPdf.pdfBase64 || ""),
+              pdfSource: pickFirst(strictPreviewPdf.pdfSource || ""),
+              pdfUrl: strictPdfUrl,
+            };
+          }
+        } catch (strictError) {
+          setPreviewProbe({
+            invoiceId: previewInvoiceId || "",
+            invoiceNumber: previewInvoiceNumber || "",
+            outcome: "server-pdf-only-strict-error",
+            attempt: strictAttempt + 1,
+            error: simplifyError(strictError),
+          });
+        }
+      }
       const requestPayload = wrapServerActionRequestPayload({
         requestMode: "preview-pdf",
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),

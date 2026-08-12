@@ -295,6 +295,9 @@ function normalizeIncomingRequest(request) {
     prefetchPreviewPdfs:
       source.prefetchPreviewPdfs === true ||
       parseBooleanFromAny(source, ["prefetchPreviewPdfs"], false),
+    disablePreviewMode:
+      source.disablePreviewMode === true ||
+      parseBooleanFromAny(source, ["disablePreviewMode"], false),
     viewerContext,
     preview: mergeObjects(previewObject, {
       invoiceId: pickFirst(previewObject.invoiceId || invoiceId),
@@ -3191,13 +3194,16 @@ module.exports = {
         (request.preview && request.preview.invoiceNumber)
     );
     const requestMode = String(request.requestMode || request.mode || "").toLowerCase();
+    const disablePreviewMode = request.disablePreviewMode === true;
     const isPreviewPdfRequest = requestMode === "preview-pdf";
     const isPreviewRequest =
-      requestMode === "preview" ||
-      isPreviewPdfRequest ||
-      Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested);
+      !disablePreviewMode &&
+      (requestMode === "preview" ||
+        isPreviewPdfRequest ||
+        Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested));
     diagnostics.previewRequest = {
       isPreviewRequest,
+      disablePreviewMode,
       previewInvoiceIdRequested,
       previewInvoiceNumberRequested,
       requestMode: String(request.requestMode || request.mode || ""),

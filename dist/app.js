@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-prefetch-fallback-20260812k";
+  window.__invoiceAccessBuild = "preview-disable-mode-prefetch-20260812l";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5139,7 +5139,30 @@
           outcome: "server-pdf-only-preview-action-fallback",
           error: simplifyError(previewActionError),
         });
-        payload = await state.client.data.invoke("syncInvoicesFromSource", requestPayload);
+        payload = await state.client.data.invoke(
+          "syncInvoicesFromSource",
+          wrapServerActionRequestPayload({
+            sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+            accountName: state.context.accountName || "",
+            workspaceBaseUrl,
+            workspaceCandidates,
+            prefetchPreviewPdfs: true,
+            disablePreviewMode: true,
+            prefetchInvoiceId: previewInvoiceId,
+            prefetchInvoiceNumber: previewInvoiceNumber,
+            viewerContext: {
+              userId: state.context.userId || "",
+              userEmail: state.context.userEmail || "",
+              userRole: state.context.userRole || "",
+              userName: state.context.userName || "",
+              permission:
+                (state.permissionHint && state.permissionHint.permission) ||
+                state.access.permission ||
+                "",
+              workspaceBaseUrl,
+            },
+          })
+        );
       }
       const directPdf = extractPreviewPdfOnlyFromPayload(payload);
       if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
@@ -5211,6 +5234,7 @@
             workspaceBaseUrl,
             workspaceCandidates,
             prefetchPreviewPdfs: true,
+            disablePreviewMode: true,
             prefetchInvoiceId: previewInvoiceId,
             prefetchInvoiceNumber: previewInvoiceNumber,
             viewerContext: {

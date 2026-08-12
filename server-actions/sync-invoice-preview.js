@@ -181,10 +181,13 @@ function normalizePreviewRequest(request) {
     pickFirstObjectFromAny(base, ["viewerContext"]) ||
     (base.viewerContext && typeof base.viewerContext === "object" ? base.viewerContext : {});
   return Object.assign({}, base, {
-    requestMode: "preview-pdf",
-    mode: "preview-pdf",
+    requestMode: "",
+    mode: "",
     searchOnly: false,
-    prefetchPreviewPdfs: false,
+    prefetchPreviewPdfs: true,
+    disablePreviewMode: true,
+    prefetchInvoiceId: invoiceId,
+    prefetchInvoiceNumber: invoiceNumber,
     workspaceBaseUrl: pickFirst(
       base.workspaceBaseUrl ||
         base.workspaceUrl ||

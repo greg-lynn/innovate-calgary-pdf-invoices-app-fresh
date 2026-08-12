@@ -107,7 +107,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-request-normalized-20260812e";
+  window.__invoiceAccessBuild = "preview-targeted-invoice-fallback-20260812f";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -1542,6 +1542,31 @@
       return normalizePreviewPdfUrl(preview.previewPdf);
     }
     return "";
+  }
+
+  function normalizeInvoiceToken(value) {
+    return String(value || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function invoiceMatchesPreviewTarget(invoice, targetInvoiceId, targetInvoiceNumber) {
+    if (!invoice || typeof invoice !== "object") {
+      return false;
+    }
+    const candidateId = pickFirst(invoice.invoiceId || invoice.id || invoice._id || invoice.invoiceID);
+    const candidateNumber = normalizeInvoiceToken(
+      pickFirst(invoice.invoiceNumber || invoice.invoiceNo || invoice.number)
+    );
+    const targetId = pickFirst(targetInvoiceId);
+    const targetNumber = normalizeInvoiceToken(targetInvoiceNumber);
+    if (targetId && candidateId && targetId === candidateId) {
+      return true;
+    }
+    if (targetNumber && candidateNumber && candidateNumber === targetNumber) {
+      return true;
+    }
+    return false;
   }
 
   function hasPreviewPdfDataUrl(preview) {
@@ -5075,6 +5100,33 @@
           diagnostics: result && result.diagnostics ? result.diagnostics : null,
         });
         return null;
+      }
+      if (Array.isArray(result.invoices) && result.invoices.length) {
+        const matchedInvoice = result.invoices.find((candidate) =>
+          invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)
+        );
+        if (matchedInvoice) {
+          const matchedPdfDataUrl = normalizePreviewPdfDataUrl(matchedInvoice);
+          const matchedPdfUrl = normalizePreviewPdfUrl(matchedInvoice);
+          if (matchedPdfDataUrl || matchedPdfUrl) {
+            setPreviewProbe({
+              invoiceId:
+                pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId) || "",
+              invoiceNumber:
+                pickFirst(matchedInvoice.invoiceNumber || previewInvoiceNumber) || "",
+              outcome: "server-pdf-only-success-from-invoices",
+              hasDataUrl: Boolean(matchedPdfDataUrl),
+              hasSignedUrl: Boolean(matchedPdfUrl),
+            });
+            return {
+              invoiceId: pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId),
+              pdfDataUrl: matchedPdfDataUrl,
+              pdfBase64: pickFirst(matchedInvoice.previewPdfBase64 || matchedInvoice.pdfBase64 || ""),
+              pdfSource: pickFirst(matchedInvoice.previewPdfSource || matchedInvoice.pdfSource || ""),
+              pdfUrl: matchedPdfUrl,
+            };
+          }
+        }
       }
       const previewPdf = result.previewPdf && typeof result.previewPdf === "object" ? result.previewPdf : {};
       const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);

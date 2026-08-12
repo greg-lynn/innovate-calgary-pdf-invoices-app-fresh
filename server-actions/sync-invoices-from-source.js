@@ -81,6 +81,12 @@ function parseJsonObject(value) {
   }
 }
 
+function normalizeLookupKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function collectNestedCandidates(value, maxDepth) {
   const limit = Number(maxDepth || 6);
   const queue = [{ node: value, depth: 0 }];
@@ -129,18 +135,20 @@ function pickFirstValueFromAny(root, keys) {
   if (!searchKeys.length) {
     return "";
   }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
   const nodes = collectNestedCandidates(root, 6);
   for (let i = 0; i < nodes.length; i += 1) {
     const node = nodes[i];
     if (!node || typeof node !== "object" || Array.isArray(node)) {
       continue;
     }
-    for (let j = 0; j < searchKeys.length; j += 1) {
-      const key = searchKeys[j];
-      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
         continue;
       }
-      const value = pickFirst(node[key]);
+      const value = pickFirst(node[nodeKey]);
       if (value) {
         return value;
       }
@@ -154,18 +162,20 @@ function pickFirstArrayFromAny(root, keys) {
   if (!searchKeys.length) {
     return [];
   }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
   const nodes = collectNestedCandidates(root, 6);
   for (let i = 0; i < nodes.length; i += 1) {
     const node = nodes[i];
     if (!node || typeof node !== "object" || Array.isArray(node)) {
       continue;
     }
-    for (let j = 0; j < searchKeys.length; j += 1) {
-      const key = searchKeys[j];
-      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
         continue;
       }
-      const value = node[key];
+      const value = node[nodeKey];
       if (Array.isArray(value)) {
         return value;
       }
@@ -179,18 +189,20 @@ function pickFirstObjectFromAny(root, keys) {
   if (!searchKeys.length) {
     return null;
   }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
   const nodes = collectNestedCandidates(root, 6);
   for (let i = 0; i < nodes.length; i += 1) {
     const node = nodes[i];
     if (!node || typeof node !== "object" || Array.isArray(node)) {
       continue;
     }
-    for (let j = 0; j < searchKeys.length; j += 1) {
-      const key = searchKeys[j];
-      if (!Object.prototype.hasOwnProperty.call(node, key)) {
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
         continue;
       }
-      const value = node[key];
+      const value = node[nodeKey];
       if (value && typeof value === "object" && !Array.isArray(value)) {
         return value;
       }

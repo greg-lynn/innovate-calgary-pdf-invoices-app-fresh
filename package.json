@@ -5,6 +5,8 @@
   "description": "Rocketlane custom app for PDF invoice imports with role-based access controls.",
   "scripts": {
     "check:js": "node --check dist/app.js && node --check index.js",
+    "lock:update": "node scripts/app-lock.mjs update",
+    "lock:verify": "node scripts/app-lock.mjs verify",
     "package:zip": "bash scripts/package-app.sh",
     "screenshots": "node scripts/capture-screenshots.mjs",
     "health:preview": "node scripts/daily-preview-health.mjs"

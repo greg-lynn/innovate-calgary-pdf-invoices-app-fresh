@@ -1,0 +1,78 @@
+name: App Lock Guard
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  schedule:
+    - cron: "35 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  verify-lock:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify app lock and syntax
+        id: verify
+        continue-on-error: true
+        run: |
+          npm run lock:verify
+          npm run check:js
+
+      - name: Open issue when lock verification fails on schedule
+        if: steps.verify.outcome == 'failure' && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const dateTag = new Date().toISOString().slice(0, 10);
+            const title = `[App Lock Guard] Drift detected ${dateTag}`;
+            const body = [
+              'Daily app lock guard found unexpected drift in locked app files.',
+              '',
+              'Run locally:',
+              '```bash',
+              'npm run lock:verify',
+              '```',
+              '',
+              'If the changes were intentional and explicitly approved, refresh the lock baseline:',
+              '```bash',
+              'npm run lock:update',
+              '```'
+            ].join('\n');
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100
+            });
+            const duplicate = existing.find((issue) => issue.title === title);
+            if (!duplicate) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: ['bug']
+              });
+            }
+
+      - name: Fail workflow when verification fails
+        if: steps.verify.outcome == 'failure'
+        run: exit 1

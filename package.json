@@ -6,7 +6,8 @@
   "scripts": {
     "check:js": "node --check dist/app.js && node --check index.js",
     "package:zip": "bash scripts/package-app.sh",
-    "screenshots": "node scripts/capture-screenshots.mjs"
+    "screenshots": "node scripts/capture-screenshots.mjs",
+    "health:preview": "node scripts/daily-preview-health.mjs"
   },
   "devDependencies": {
     "playwright": "^1.58.2"

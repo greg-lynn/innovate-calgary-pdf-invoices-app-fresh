@@ -17,6 +17,7 @@
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 3;
   const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 8000;
+  const ZIP_NATIVE_DIRECT_FETCH_TIMEOUT_MS = 5000;
   const PREVIEW_PDF_ONLY_TIMEOUT_MS = 12000;
   const PREVIEW_PDF_ONLY_HARD_TIMEOUT_MS = 30000;
   const PREVIEW_PDF_ONLY_RETRY_DELAY_MS = 150;
@@ -109,7 +110,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "zip-native-only-pdfs-20260813y";
+  window.__invoiceAccessBuild = "zip-native-direct-fallback-20260813z";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5850,6 +5851,23 @@
               if (preferredPdfDataUrl) {
                 nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
                 pdfBase64ToWrite = normalizeBase64PdfPayload(preferredPdfDataUrl);
+              }
+              if (!looksLikePdfBytes(nativePdfBytes)) {
+                const previewPdfUrl = normalizePreviewPdfUrl(previewPdfPayload || {});
+                const directFetchInvoice = mergeObjects(invoice || {}, {
+                  pdfUrl: previewPdfUrl || pickFirst(invoice && invoice.pdfUrl),
+                });
+                try {
+                  nativePdfBytes = await withTimeout(
+                    fetchNativeInvoicePdfBytes(directFetchInvoice),
+                    ZIP_NATIVE_DIRECT_FETCH_TIMEOUT_MS,
+                    "ZIP direct native fetch timed out"
+                  );
+                } catch (directFetchError) {
+                  if (!invoiceError) {
+                    invoiceError = simplifyError(directFetchError);
+                  }
+                }
               }
             }
             if (looksLikePdfBytes(nativePdfBytes)) {

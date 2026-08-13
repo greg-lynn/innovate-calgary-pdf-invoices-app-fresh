@@ -15,9 +15,10 @@
   ];
   const SERVER_ACTION_API_BASE_URL = "https://api.rocketlane.com";
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
-  const ZIP_PREVIEW_FETCH_CONCURRENCY = 3;
-  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 8000;
-  const ZIP_NATIVE_DIRECT_FETCH_TIMEOUT_MS = 5000;
+  const ZIP_PREVIEW_FETCH_CONCURRENCY = 1;
+  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 12000;
+  const ZIP_PREVIEW_RETRY_ATTEMPTS = 3;
+  const ZIP_PREVIEW_RETRY_BASE_DELAY_MS = 400;
   const PREVIEW_PDF_ONLY_TIMEOUT_MS = 12000;
   const PREVIEW_PDF_ONLY_HARD_TIMEOUT_MS = 30000;
   const PREVIEW_PDF_ONLY_RETRY_DELAY_MS = 150;
@@ -110,7 +111,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "zip-native-direct-fallback-20260813z";
+  window.__invoiceAccessBuild = "zip-native-server-retry-20260813aa";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5810,6 +5811,7 @@
       ];
       let pdfFileCount = 0;
       let missingNativePdfCount = 0;
+      const missingNativeInvoiceNumbers = [];
       let processedCount = 0;
       const exportResults = await mapWithConcurrency(
         invoicesToExport,
@@ -5828,45 +5830,38 @@
               nativePdfBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
             }
             if (!looksLikePdfBytes(nativePdfBytes)) {
-              let previewPdfPayload = null;
-              try {
-                previewPdfPayload = await withTimeout(
-                  fetchInvoicePreviewPdfOnlyFromServerAction(invoice),
-                  ZIP_PREVIEW_REQUEST_TIMEOUT_MS,
-                  "ZIP preview PDF request timed out"
-                );
-              } catch (zipPreviewError) {
-                invoiceError = simplifyError(zipPreviewError);
-              }
-              const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
-                pdfDataUrl:
-                  (previewPdfPayload && previewPdfPayload.pdfDataUrl) ||
-                  invoice.previewPdfDataUrl ||
-                  "",
-                pdfBase64:
-                  (previewPdfPayload && previewPdfPayload.pdfBase64) ||
-                  invoice.previewPdfBase64 ||
-                  "",
-              });
-              if (preferredPdfDataUrl) {
-                nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
-                pdfBase64ToWrite = normalizeBase64PdfPayload(preferredPdfDataUrl);
-              }
-              if (!looksLikePdfBytes(nativePdfBytes)) {
-                const previewPdfUrl = normalizePreviewPdfUrl(previewPdfPayload || {});
-                const directFetchInvoice = mergeObjects(invoice || {}, {
-                  pdfUrl: previewPdfUrl || pickFirst(invoice && invoice.pdfUrl),
-                });
+              for (let attempt = 0; attempt < ZIP_PREVIEW_RETRY_ATTEMPTS; attempt += 1) {
+                let previewPdfPayload = null;
                 try {
-                  nativePdfBytes = await withTimeout(
-                    fetchNativeInvoicePdfBytes(directFetchInvoice),
-                    ZIP_NATIVE_DIRECT_FETCH_TIMEOUT_MS,
-                    "ZIP direct native fetch timed out"
+                  previewPdfPayload = await withTimeout(
+                    fetchInvoicePreviewPdfOnlyFromServerAction(invoice),
+                    ZIP_PREVIEW_REQUEST_TIMEOUT_MS,
+                    "ZIP preview PDF request timed out"
                   );
-                } catch (directFetchError) {
-                  if (!invoiceError) {
-                    invoiceError = simplifyError(directFetchError);
-                  }
+                } catch (zipPreviewError) {
+                  invoiceError = simplifyError(zipPreviewError);
+                }
+                const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
+                  pdfDataUrl:
+                    (previewPdfPayload && previewPdfPayload.pdfDataUrl) ||
+                    invoice.previewPdfDataUrl ||
+                    "",
+                  pdfBase64:
+                    (previewPdfPayload && previewPdfPayload.pdfBase64) ||
+                    invoice.previewPdfBase64 ||
+                    "",
+                });
+                if (preferredPdfDataUrl) {
+                  nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
+                  pdfBase64ToWrite = normalizeBase64PdfPayload(preferredPdfDataUrl);
+                }
+                if (looksLikePdfBytes(nativePdfBytes)) {
+                  break;
+                }
+                if (attempt + 1 < ZIP_PREVIEW_RETRY_ATTEMPTS) {
+                  const delayMs =
+                    ZIP_PREVIEW_RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+                  await new Promise((resolve) => window.setTimeout(resolve, delayMs));
                 }
               }
             }
@@ -5934,6 +5929,7 @@
           return;
         }
         missingNativePdfCount += 1;
+        missingNativeInvoiceNumbers.push(invoice.invoiceNumber || invoice.id || "unknown");
         if (result && result.error) {
           appendLog(
             "PDF_PREVIEW_FAILED",
@@ -5948,10 +5944,13 @@
       });
 
       if (missingNativePdfCount > 0) {
+        const sampleMissing = missingNativeInvoiceNumbers.slice(0, 5).join(", ");
         refs.exportInsight.textContent =
           "ZIP canceled: " +
           missingNativePdfCount +
-          " invoice(s) did not return native PDFs. Please retry.";
+          " invoice(s) did not return native PDFs (" +
+          sampleMissing +
+          "). Please retry.";
         return;
       }
 

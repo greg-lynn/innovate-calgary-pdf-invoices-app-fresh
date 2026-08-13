@@ -16,7 +16,7 @@
   const SERVER_ACTION_API_BASE_URL = "https://api.rocketlane.com";
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
   const ZIP_PREVIEW_FETCH_CONCURRENCY = 3;
-  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 3500;
+  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 8000;
   const PREVIEW_PDF_ONLY_TIMEOUT_MS = 12000;
   const PREVIEW_PDF_ONLY_HARD_TIMEOUT_MS = 30000;
   const PREVIEW_PDF_ONLY_RETRY_DELAY_MS = 150;
@@ -109,7 +109,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "zip-no-hang-timeout-20260813x";
+  window.__invoiceAccessBuild = "zip-native-only-pdfs-20260813y";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5808,7 +5808,7 @@
       ],
       ];
       let pdfFileCount = 0;
-      let missingPdfCount = 0;
+      let missingNativePdfCount = 0;
       let processedCount = 0;
       const exportResults = await mapWithConcurrency(
         invoicesToExport,
@@ -5854,22 +5854,6 @@
             }
             if (looksLikePdfBytes(nativePdfBytes)) {
               pdfBytesToWrite = nativePdfBytes;
-            } else {
-              const generatedPdfDataUrl = safeCreateInvoicePdfDataUrl(invoice, null);
-              const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
-              if (looksLikePdfBytes(generatedPdfBytes)) {
-                pdfBytesToWrite = generatedPdfBytes;
-                pdfBase64ToWrite = normalizeBase64PdfPayload(generatedPdfDataUrl);
-              }
-            }
-            if (!looksLikePdfBytes(pdfBytesToWrite)) {
-              const emergencyPdfDataUrl = createEmergencyInvoicePdfDataUrl(invoice);
-              const emergencyPdfBytes = pdfDataUrlToBytes(emergencyPdfDataUrl);
-              if (looksLikePdfBytes(emergencyPdfBytes)) {
-                pdfBytesToWrite = emergencyPdfBytes;
-                pdfBase64ToWrite = normalizeBase64PdfPayload(emergencyPdfDataUrl);
-                invoiceError = invoiceError || "Used emergency PDF fallback for export.";
-              }
             }
           } catch (error) {
             invoiceError = simplifyError(error);
@@ -5896,7 +5880,7 @@
       exportResults.forEach((result) => {
         const invoice = result && result.invoice;
         if (!invoice) {
-          missingPdfCount += 1;
+          missingNativePdfCount += 1;
           appendLog("PDF_PREVIEW_FAILED", "Skipped invoice export due to unexpected processing error.");
           return;
         }
@@ -5931,45 +5915,27 @@
           pdfFileCount += 1;
           return;
         }
-        const emergencyPdfBytes = pdfDataUrlToBytes(createEmergencyInvoicePdfDataUrl(invoice));
-        if (looksLikePdfBytes(emergencyPdfBytes)) {
-          zip.file(
-            targetPdfPath,
-            emergencyPdfBytes
-          );
-          pdfFileCount += 1;
-          missingPdfCount += 1;
-          appendLog(
-            "PDF_PREVIEW_FAILED",
-            "Used emergency fallback PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
-          );
-          return;
-        }
-        const emergencyBase64 = normalizeBase64PdfPayload(createEmergencyInvoicePdfDataUrl(invoice));
-        if (emergencyBase64) {
-          zip.file(targetPdfPath, emergencyBase64, { base64: true });
-          pdfFileCount += 1;
-          missingPdfCount += 1;
-          appendLog(
-            "PDF_PREVIEW_FAILED",
-            "Used emergency base64 fallback PDF for invoice " +
-              (invoice.invoiceNumber || invoice.id || "unknown")
-          );
-          return;
-        }
-        missingPdfCount += 1;
+        missingNativePdfCount += 1;
         if (result && result.error) {
           appendLog(
             "PDF_PREVIEW_FAILED",
-            "Unable to prepare PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown"),
+            "Unable to fetch native PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown"),
             result.error
           );
         }
         appendLog(
           "PDF_PREVIEW_FAILED",
-          "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+          "Native PDF unavailable for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
         );
       });
+
+      if (missingNativePdfCount > 0) {
+        refs.exportInsight.textContent =
+          "ZIP canceled: " +
+          missingNativePdfCount +
+          " invoice(s) did not return native PDFs. Please retry.";
+        return;
+      }
 
       zip.file("invoices.csv", toCsv(csvRows));
       const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;

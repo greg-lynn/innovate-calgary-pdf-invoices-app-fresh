@@ -1,12 +1,12 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-12T19:59:23.218Z",
+  "generatedAt": "2026-08-13T22:39:06.944Z",
   "files": {
-    "dist/app.js": "5eb8ee72f7bf076982a76be4847dd51582f0af40eb88443731438dc2723e88d5",
+    "dist/app.js": "e0ae45c8a86fca2bbaf41836ad08e794dafe0a6d817c2f63449041cc620c1f91",
     "dist/index.html": "695a7f1faf9af449f502ae00b8a7c720b2b57e6f04cdd699052f3a4b27d8b006",
     "dist/styles.css": "3cdda467e874ab26719b35cc3eb064fb43d28f7a35e492dd293f4b2c466474df",
     "index.js": "974652b90084f910c2fee962ba3bcefead3b4a8ab993da344e0feb9ee2c62efe",
-    "server-actions/sync-invoices-from-source.js": "e94d2eb441656a2204559a7aa1947d85e2187f2fb878bf061523d7638cfbe68a",
+    "server-actions/sync-invoices-from-source.js": "a0bd125dfd45e5c8f3effc25210ce6f4d2c6df92937ab5382488b9034d2cf284",
     "server-actions/sync-invoice-preview.js": "744740f5afbd0be4c8d243c74a60e13b6ed155b7720d0b58a79fba1b9b76dcc2"
   }
 }

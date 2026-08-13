@@ -108,7 +108,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "zip-pdf-folder-guarantee-20260812v";
+  window.__invoiceAccessBuild = "zip-and-hub-program-stability-20260813w";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -5815,6 +5815,7 @@
         async (invoice) => {
           let preview = null;
           let nativePdfBytes = null;
+          let pdfBase64ToWrite = "";
           let invoiceError = "";
           let pdfBytesToWrite = null;
           try {
@@ -5856,6 +5857,7 @@
               });
               if (preferredPdfDataUrl) {
                 nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
+                pdfBase64ToWrite = normalizeBase64PdfPayload(preferredPdfDataUrl);
               }
             }
             if (looksLikePdfBytes(nativePdfBytes)) {
@@ -5865,6 +5867,7 @@
               const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
               if (looksLikePdfBytes(generatedPdfBytes)) {
                 pdfBytesToWrite = generatedPdfBytes;
+                pdfBase64ToWrite = normalizeBase64PdfPayload(generatedPdfDataUrl);
               }
             }
             if (!looksLikePdfBytes(pdfBytesToWrite)) {
@@ -5872,6 +5875,7 @@
               const emergencyPdfBytes = pdfDataUrlToBytes(emergencyPdfDataUrl);
               if (looksLikePdfBytes(emergencyPdfBytes)) {
                 pdfBytesToWrite = emergencyPdfBytes;
+                pdfBase64ToWrite = normalizeBase64PdfPayload(emergencyPdfDataUrl);
                 invoiceError = invoiceError || "Used emergency PDF fallback for export.";
               }
             }
@@ -5890,6 +5894,7 @@
           return {
             invoice,
             pdfBytesToWrite,
+            pdfBase64ToWrite,
             summary: resolveInvoiceExportSummary(invoice, preview),
             error: invoiceError,
           };
@@ -5918,18 +5923,26 @@
           summary.dueDateLabel,
           summary.hoursLabel,
         ]);
+        const targetPdfPath =
+          "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf";
         if (result.pdfBytesToWrite && looksLikePdfBytes(result.pdfBytesToWrite)) {
           zip.file(
-            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            targetPdfPath,
             result.pdfBytesToWrite
           );
+          pdfFileCount += 1;
+          return;
+        }
+        const normalizedPdfBase64 = normalizeBase64PdfPayload(result.pdfBase64ToWrite || "");
+        if (normalizedPdfBase64) {
+          zip.file(targetPdfPath, normalizedPdfBase64, { base64: true });
           pdfFileCount += 1;
           return;
         }
         const emergencyPdfBytes = pdfDataUrlToBytes(createEmergencyInvoicePdfDataUrl(invoice));
         if (looksLikePdfBytes(emergencyPdfBytes)) {
           zip.file(
-            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            targetPdfPath,
             emergencyPdfBytes
           );
           pdfFileCount += 1;
@@ -5937,6 +5950,18 @@
           appendLog(
             "PDF_PREVIEW_FAILED",
             "Used emergency fallback PDF for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+          );
+          return;
+        }
+        const emergencyBase64 = normalizeBase64PdfPayload(createEmergencyInvoicePdfDataUrl(invoice));
+        if (emergencyBase64) {
+          zip.file(targetPdfPath, emergencyBase64, { base64: true });
+          pdfFileCount += 1;
+          missingPdfCount += 1;
+          appendLog(
+            "PDF_PREVIEW_FAILED",
+            "Used emergency base64 fallback PDF for invoice " +
+              (invoice.invoiceNumber || invoice.id || "unknown")
           );
           return;
         }

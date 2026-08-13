@@ -14,6 +14,9 @@ const REQUEST_TIMEOUT_MS = 30000;
 const MAX_HTTP_REDIRECTS = 5;
 const PREVIEW_PDF_CACHE_TTL_MS = 10 * 60 * 1000;
 const PREVIEW_PDF_CACHE_MAX_ENTRIES = 300;
+const LINE_ENRICHMENT_CONCURRENCY = 2;
+const LINE_ENRICHMENT_MAX_ATTEMPTS = 3;
+const LINE_ENRICHMENT_RETRY_BASE_DELAY_MS = 250;
 const previewPdfCache = new Map();
 const previewPdfInFlight = new Map();
 const FIELD_ALIAS_GROUPS = {
@@ -693,15 +696,55 @@ function collectCustomFieldSources(record) {
   if (!record || typeof record !== "object") {
     return [];
   }
-  return [
-    record.fields,
-    record.customFields,
-    record.customFieldValues,
-    record.fieldValues,
-    record.projectFields,
-    record.invoiceFields,
-    record.metadataFields,
-  ].filter((value) => value && (Array.isArray(value) || typeof value === "object"));
+  const sources = [];
+  const seen = typeof WeakSet === "function" ? new WeakSet() : null;
+  const push = (value) => {
+    if (!value || (typeof value !== "object" && !Array.isArray(value))) {
+      return;
+    }
+    if (seen) {
+      if (seen.has(value)) {
+        return;
+      }
+      seen.add(value);
+    }
+    sources.push(value);
+  };
+  push(record.fields);
+  push(record.customFields);
+  push(record.customFieldValues);
+  push(record.fieldValues);
+  push(record.projectFields);
+  push(record.invoiceFields);
+  push(record.metadataFields);
+  push(record.project);
+  push(record.projects);
+  push(record.company);
+  push(record.account);
+  if (Array.isArray(record.invoiceToSourceMappings)) {
+    record.invoiceToSourceMappings.forEach((mapping) => {
+      if (!mapping || typeof mapping !== "object") {
+        return;
+      }
+      push(mapping);
+      push(mapping.fields);
+      push(mapping.customFields);
+      push(mapping.fieldValues);
+      push(mapping.source);
+      if (mapping.source && typeof mapping.source === "object") {
+        push(mapping.source.fields);
+        push(mapping.source.customFields);
+        push(mapping.source.fieldValues);
+      }
+      push(mapping.project);
+      if (mapping.project && typeof mapping.project === "object") {
+        push(mapping.project.fields);
+        push(mapping.project.customFields);
+        push(mapping.project.fieldValues);
+      }
+    });
+  }
+  return sources;
 }
 
 function extractCustomFieldAliases(record) {
@@ -2091,6 +2134,56 @@ async function requestCollection(baseUrl, headers, paths, preferredKeys) {
   }
 
   return { rows, errors };
+}
+
+function sleepMs(durationMs) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Number(durationMs || 0)));
+  });
+}
+
+function isRetryableHttpFailure(message) {
+  const text = String(message || "");
+  if (!text) {
+    return false;
+  }
+  return (
+    text.includes("(429)") ||
+    text.includes(" 429 ") ||
+    text.includes("(503)") ||
+    text.includes(" 503 ") ||
+    text.includes("ETIMEDOUT") ||
+    text.includes("ECONNRESET")
+  );
+}
+
+async function requestInvoiceLinesWithRetry(baseUrl, headers, encodedInvoiceId) {
+  const paths = [
+    `/api/1.0/invoices/${encodedInvoiceId}/lines`,
+    `/api/v1/invoices/${encodedInvoiceId}/lines`,
+  ];
+  let lastResult = { rows: [], errors: [] };
+  for (let attempt = 1; attempt <= LINE_ENRICHMENT_MAX_ATTEMPTS; attempt += 1) {
+    const result = await requestCollection(baseUrl, headers, paths, [
+      "data",
+      "lines",
+      "items",
+      "results",
+    ]);
+    lastResult = result;
+    if (Array.isArray(result.rows) && result.rows.length) {
+      return result;
+    }
+    const retryable = (Array.isArray(result.errors) ? result.errors : []).some((errorMessage) =>
+      isRetryableHttpFailure(errorMessage)
+    );
+    if (!retryable || attempt >= LINE_ENRICHMENT_MAX_ATTEMPTS) {
+      break;
+    }
+    const backoffMs = LINE_ENRICHMENT_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1);
+    await sleepMs(backoffMs);
+  }
+  return lastResult;
 }
 
 function extractViewerCandidate(payload) {
@@ -3706,7 +3799,7 @@ module.exports = {
         }
       }
       if (lineEnrichmentQueue.length) {
-        const maxLineEnrichmentConcurrency = 6;
+        const maxLineEnrichmentConcurrency = LINE_ENRICHMENT_CONCURRENCY;
         let lineEnrichmentIndex = 0;
         const workers = Array.from(
           { length: Math.min(maxLineEnrichmentConcurrency, lineEnrichmentQueue.length) },
@@ -3717,11 +3810,10 @@ module.exports = {
                 lineEnrichmentIndex += 1;
                 const entry = lineEnrichmentQueue[currentIndex];
                 try {
-                  const lineFetch = await requestCollection(
+                  const lineFetch = await requestInvoiceLinesWithRetry(
                     baseUrl,
                     headers,
-                    [`/api/1.0/invoices/${entry.invoiceId}/lines`],
-                    ["data", "lines", "items", "results"]
+                    entry.invoiceId
                   );
                   diagnostics.invoiceErrors.push(...lineFetch.errors);
                   const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);

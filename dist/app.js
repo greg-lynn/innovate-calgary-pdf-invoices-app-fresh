@@ -13,11 +13,34 @@
     "expert advisor program invoices",
     "expert advisors program invoices",
   ];
+  const SERVER_ACTION_API_BASE_URL = "https://api.rocketlane.com";
+  const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
+  const ZIP_PREVIEW_FETCH_CONCURRENCY = 4;
+  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 12000;
+  const ZIP_PREVIEW_RETRY_ATTEMPTS = 3;
+  const ZIP_PREVIEW_RETRY_BASE_DELAY_MS = 400;
+  const PREVIEW_FETCH_TIMEOUT_MS = 15000;
+  const PREVIEW_PDF_ONLY_TIMEOUT_MS = 25000;
   const FIELD_ALIAS_GROUPS = {
-    accountName: ["account"],
-    createdBy: ["created by", "createdby", "creator"],
+    accountName: [
+      "account",
+      "account name",
+      "client",
+      "client name",
+      "rocketlane account",
+      "accountname",
+    ],
+    createdBy: ["created by", "createdby", "creator", "submitted by", "expert advisor"],
     quantityHours: ["qty", "quantity", "hours", "hour"],
-    contractName: ["contract name", "contract"],
+    contractName: [
+      "contract name",
+      "contract",
+      "contract number",
+      "sow",
+      "sow#",
+      "sow number",
+      "sow no",
+    ],
     hub: ["hub"],
     program: ["program"],
   };
@@ -102,12 +125,40 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-all-invoices-20260623c";
+  window.__invoiceAccessBuild = "preview-zip-mapping-stability-20260916a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
     access: state.access,
+    previewProbe: null,
+    previewLast: null,
   };
+
+  function publishDebugToHostWindows() {
+    try {
+      window.__invoiceAccessBuild = window.__invoiceAccessBuild || "";
+      window.__invoiceAccessDebug = window.__invoiceAccessDebug || {};
+      const targets = [];
+      if (window.top && window.top !== window) {
+        targets.push(window.top);
+      }
+      if (window.parent && window.parent !== window) {
+        targets.push(window.parent);
+      }
+      targets.forEach((target) => {
+        try {
+          target.__invoiceAccessBuild = window.__invoiceAccessBuild;
+          target.__invoiceAccessDebug = window.__invoiceAccessDebug;
+        } catch (_error) {
+          // Ignore cross-context assignment failures.
+        }
+      });
+    } catch (_error) {
+      // Ignore host debug publishing failures.
+    }
+  }
+
+  publishDebugToHostWindows();
 
   const refs = {};
 
@@ -1249,11 +1300,15 @@
       });
       const workspaceCandidates = getWorkspaceCandidates();
       const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
-      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        wrapServerActionRequestPayload({
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
+        apiBaseUrl: SERVER_ACTION_API_BASE_URL,
         workspaceBaseUrl,
         workspaceCandidates,
+        prefetchPreviewPdfs: false,
         viewerContext: {
           userId: state.context.userId || "",
           userEmail: state.context.userEmail || "",
@@ -1265,7 +1320,8 @@
             "",
           workspaceBaseUrl,
         },
-      });
+        })
+      );
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
         if (result && result.error) {
@@ -1361,6 +1417,19 @@
     }
   }
 
+  function tryParseJsonObject(value) {
+    const text = String(value || "").trim();
+    if (!text || (text[0] !== "{" && text[0] !== "[")) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
   function unwrapServerActionResponse(payload) {
     let current = payload;
     for (let i = 0; i < 6; i += 1) {
@@ -1370,6 +1439,14 @@
       if (Array.isArray(current)) {
         return { ok: true, invoices: current };
       }
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (!parsed) {
+          return null;
+        }
+        current = parsed;
+        continue;
+      }
       if (typeof current !== "object") {
         return null;
       }
@@ -1377,6 +1454,7 @@
         current.ok !== undefined ||
         current.error ||
         current.preview ||
+        current.previewPdf ||
         current.invoices ||
         current.sourceProjects ||
         current.teamMembers
@@ -1392,6 +1470,19 @@
         null;
     }
     return null;
+  }
+
+  function wrapServerActionRequestPayload(payload) {
+    const core = payload && typeof payload === "object" ? payload : {};
+    const nested = Object.assign({}, core);
+    return Object.assign({}, core, {
+      request: nested,
+      data: Object.assign({}, nested),
+      payload: Object.assign({}, nested),
+      input: Object.assign({}, nested),
+      args: Object.assign({}, nested),
+      body: Object.assign({}, nested),
+    });
   }
 
   function normalizePdfDataUrl(value) {
@@ -1413,31 +1504,128 @@
     return prefix + encoded;
   }
 
+  function normalizeBase64PdfPayload(value) {
+    const raw = String(value || "").trim();
+    if (!raw) {
+      return "";
+    }
+    let encoded = raw.replace(/^data:application\/pdf[^,]*,/i, "").replace(/\s+/g, "");
+    encoded = encoded.replace(/-/g, "+").replace(/_/g, "/").replace(/ /g, "+");
+    if (!encoded || encoded.length < 80 || !/^[A-Za-z0-9+/=]+$/.test(encoded)) {
+      return "";
+    }
+    const padding = encoded.length % 4;
+    if (padding) {
+      encoded += "=".repeat(4 - padding);
+    }
+    return /^JVBER/i.test(encoded) ? encoded : "";
+  }
+
   function normalizePreviewPdfDataUrl(preview) {
-    if (!preview || typeof preview !== "object") {
+    if (!preview) {
+      return "";
+    }
+    if (typeof preview === "string") {
+      const directString = normalizePdfDataUrl(preview);
+      if (directString) {
+        return directString;
+      }
+      const parsedString = tryParseJsonObject(preview);
+      if (parsedString) {
+        return normalizePreviewPdfDataUrl(parsedString);
+      }
+      const base64String = normalizeBase64PdfPayload(preview);
+      return base64String ? `data:application/pdf;base64,${base64String}` : "";
+    }
+    if (typeof preview !== "object") {
       return "";
     }
     const direct = normalizePdfDataUrl(preview.pdfDataUrl);
     if (direct) {
       return direct;
     }
-    const base64 = String(preview.pdfBase64 || "").replace(/\s+/g, "").trim();
+    const previewDirect = normalizePdfDataUrl(preview.previewPdfDataUrl);
+    if (previewDirect) {
+      return previewDirect;
+    }
+    const fallbackDirect = normalizePdfDataUrl(
+      preview.dataUrl || preview.fileDataUrl || preview.documentDataUrl
+    );
+    if (fallbackDirect) {
+      return fallbackDirect;
+    }
+    const base64 = normalizeBase64PdfPayload(
+      preview.pdfBase64 ||
+        preview.previewPdfBase64 ||
+        preview.base64 ||
+        preview.fileBase64 ||
+        preview.documentBase64 ||
+        preview.pdf ||
+        preview.data
+    );
     if (!base64) {
+      if (preview.previewPdf && typeof preview.previewPdf === "object") {
+        return normalizePreviewPdfDataUrl(preview.previewPdf);
+      }
       return "";
     }
-    let normalized = base64.replace(/-/g, "+").replace(/_/g, "/").replace(/ /g, "+");
-    const padding = normalized.length % 4;
-    if (padding) {
-      normalized += "=".repeat(4 - padding);
+    return `data:application/pdf;base64,${base64}`;
+  }
+
+  function normalizePreviewPdfUrl(preview) {
+    if (!preview || typeof preview !== "object") {
+      return "";
     }
-    return `data:application/pdf;base64,${normalized}`;
+    const direct = pickFirst(
+      preview.pdfUrl ||
+        preview.previewPdfUrl ||
+        preview.url ||
+        preview.downloadUrl ||
+        preview.signedUrl ||
+        preview.fileUrl ||
+        preview.documentUrl
+    );
+    if (canUseDirectNativePreviewUrl(direct)) {
+      return direct;
+    }
+    if (preview.previewPdf && typeof preview.previewPdf === "object") {
+      return normalizePreviewPdfUrl(preview.previewPdf);
+    }
+    return "";
+  }
+
+  function normalizeInvoiceToken(value) {
+    return String(value || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function invoiceMatchesPreviewTarget(invoice, targetInvoiceId, targetInvoiceNumber) {
+    if (!invoice || typeof invoice !== "object") {
+      return false;
+    }
+    const candidateId = pickFirst(invoice.invoiceId || invoice.id || invoice._id || invoice.invoiceID);
+    const candidateNumber = normalizeInvoiceToken(
+      pickFirst(invoice.invoiceNumber || invoice.invoiceNo || invoice.number)
+    );
+    const targetId = pickFirst(targetInvoiceId);
+    const targetNumber = normalizeInvoiceToken(targetInvoiceNumber);
+    if (targetId && candidateId && targetId === candidateId) {
+      return true;
+    }
+    if (targetNumber && candidateNumber && candidateNumber === targetNumber) {
+      return true;
+    }
+    return false;
   }
 
   function hasPreviewPdfDataUrl(preview) {
     if (!preview || typeof preview !== "object") {
       return false;
     }
-    return Boolean(normalizePreviewPdfDataUrl(preview));
+    return Boolean(
+      normalizePreviewPdfDataUrl(preview) || normalizePreviewPdfUrl(preview)
+    );
   }
 
   function collectPreviewCandidatesFromPayload(payload) {
@@ -1469,6 +1657,11 @@
       if (
         typeof current.pdfDataUrl === "string" ||
         typeof current.pdfBase64 === "string" ||
+        typeof current.previewPdfDataUrl === "string" ||
+        typeof current.previewPdfBase64 === "string" ||
+        typeof current.previewPdfUrl === "string" ||
+        typeof current.pdfUrl === "string" ||
+        typeof current.url === "string" ||
         Array.isArray(current.lineItems) ||
         Array.isArray(current.customFields) ||
         Array.isArray(current.allFields)
@@ -1498,8 +1691,89 @@
     if (!candidates.length) {
       return null;
     }
-    const withPdf = candidates.find((candidate) => hasPreviewPdfDataUrl(candidate));
+    const withPdf = candidates.find(
+      (candidate) =>
+        hasPreviewPdfDataUrl(candidate) || Boolean(normalizePreviewPdfUrl(candidate))
+    );
     return withPdf || candidates[0] || null;
+  }
+
+  function extractPreviewPdfOnlyFromPayload(payload) {
+    const queue = [payload];
+    const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+    while (queue.length) {
+      const current = queue.shift();
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (parsed) {
+          queue.push(parsed);
+          continue;
+        }
+        const stringPdfDataUrl = normalizePreviewPdfDataUrl(current);
+        if (stringPdfDataUrl) {
+          return {
+            invoiceId: "",
+            pdfDataUrl: stringPdfDataUrl,
+            pdfBase64: "",
+            pdfSource: "string-payload",
+            pdfUrl: "",
+          };
+        }
+        continue;
+      }
+      if (!current || typeof current !== "object") {
+        continue;
+      }
+      if (visited) {
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+      }
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i += 1) {
+          queue.push(current[i]);
+        }
+        continue;
+      }
+      if (typeof current.previewPdf === "string") {
+        queue.push(current.previewPdf);
+      }
+      if (typeof current.preview === "string") {
+        queue.push(current.preview);
+      }
+      if (current.previewPdf && typeof current.previewPdf === "object") {
+        queue.push(current.previewPdf);
+      }
+      const pdfDataUrl = normalizePreviewPdfDataUrl(current);
+      const pdfUrl = normalizePreviewPdfUrl(current);
+      if (pdfDataUrl || pdfUrl) {
+        return {
+          invoiceId: pickFirst(current.invoiceId || current.id || ""),
+          pdfDataUrl,
+          pdfBase64: pickFirst(
+            current.pdfBase64 || current.previewPdfBase64 || current.base64 || ""
+          ),
+          pdfSource: pickFirst(current.pdfSource || ""),
+          pdfUrl,
+        };
+      }
+      const nested = [
+        current.data,
+        current.response,
+        current.result,
+        current.payload,
+        current.body,
+        current.item,
+        current.value,
+      ];
+      for (let i = 0; i < nested.length; i += 1) {
+        if (nested[i] && typeof nested[i] === "object") {
+          queue.push(nested[i]);
+        }
+      }
+    }
+    return null;
   }
 
   async function fetchInvoicesFromSourceProjects() {
@@ -2852,11 +3126,13 @@
     );
 
     const fieldAliasValues = extractInvoiceFieldAliasValues(node);
-    const createdByFieldName = isLikelyDisplayName(
+    const createdByFieldRaw = pickFirst(
       fieldAliasValues.createdBy && fieldAliasValues.createdBy[0]
-    )
-      ? pickFirst(fieldAliasValues.createdBy && fieldAliasValues.createdBy[0])
+    );
+    const createdByFieldName = isLikelyDisplayName(createdByFieldRaw)
+      ? createdByFieldRaw
       : "";
+    const createdByFieldEmail = normalizeEmail(createdByFieldRaw);
     const quantityFromFields = Array.isArray(fieldAliasValues.quantityHours)
       ? fieldAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
       : 0;
@@ -2895,6 +3171,7 @@
       pickFirst(
         preferredCreatedByName ||
           createdByFieldName ||
+          createdByFieldRaw ||
           submittedByName ||
           node.projectManagerName ||
           node.expertAdvisorName ||
@@ -2913,6 +3190,7 @@
     );
     const associatedEmails = dedupeEmails(
       nodeContacts.emails
+        .concat(createdByFieldEmail ? [createdByFieldEmail] : [])
         .concat(project.ownerEmails || [])
         .concat(scrubbedEmails)
         .concat(extractAssociatedEmails(node))
@@ -2940,6 +3218,7 @@
       ownerName,
       accountName:
         pickPreferredAccountName([
+          (fieldAliasValues.accountName && fieldAliasValues.accountName[0]) || "",
           node.accountName,
           node.account && (node.account.accountName || node.account.name || node.account.companyName),
           node.customer && (node.customer.accountName || node.customer.companyName || node.customer.name),
@@ -2951,6 +3230,9 @@
         ]) || "Rocketlane Account",
       contractName: pickFirst(
         (fieldAliasValues.contractName && fieldAliasValues.contractName[0]) ||
+          node.sowNumber ||
+          node.sowNo ||
+          node.contractNumber ||
           node.contractName ||
           project.contractName ||
           ""
@@ -3486,6 +3768,8 @@
       }
       toggleInvoiceDownloadSelection(invoice.id, Boolean(checked), false);
     });
+    // Re-render rows so each visible checkbox immediately reflects select-all state.
+    renderInvoiceTable();
     renderSelectAllState();
     renderExportInsight();
   }
@@ -3548,7 +3832,30 @@
     refs.modalInvoicePreview.innerHTML = "";
     refs.modalPdfFrame.classList.remove("hidden");
     setModalPdfFrameSrc("");
-    loadInvoicePreview(invoice);
+    const previewPromise = loadInvoicePreview(invoice);
+    if (previewPromise && typeof previewPromise.catch === "function") {
+      previewPromise.catch((error) => {
+        appendLog(
+          "PDF_PREVIEW_FAILED",
+          "Unhandled preview promise failure for invoice " +
+            (invoice.invoiceNumber || invoice.id || "unknown") +
+            ".",
+          error
+        );
+        setPreviewDebugState("native-failed-unhandled", {
+          invoiceNumber: invoice.invoiceNumber || "",
+          error: simplifyError(error),
+        });
+        refs.modalPdfFrame.classList.add("hidden");
+        refs.modalInvoicePreview.classList.remove("hidden");
+        renderInvoicePreviewContent(
+          invoice,
+          null,
+          false,
+          "Unable to load native invoice preview right now."
+        );
+      });
+    }
   }
 
   function closePdfModal() {
@@ -3595,6 +3902,39 @@
     return true;
   }
 
+  function setPreviewDebugState(stateName, details) {
+    try {
+      window.__invoiceAccessDebug = mergeObjects(window.__invoiceAccessDebug || {}, {
+        previewLast: mergeObjects(
+          {
+            state: String(stateName || ""),
+            at: new Date().toISOString(),
+          },
+          details || {}
+        ),
+      });
+      publishDebugToHostWindows();
+    } catch (_error) {
+      // Ignore debug state errors.
+    }
+  }
+
+  function setPreviewProbe(details) {
+    try {
+      window.__invoiceAccessDebug = mergeObjects(window.__invoiceAccessDebug || {}, {
+        previewProbe: mergeObjects(
+          {
+            at: new Date().toISOString(),
+          },
+          details || null
+        ),
+      });
+      publishDebugToHostWindows();
+    } catch (_error) {
+      // Ignore debug probe errors.
+    }
+  }
+
   function renderSearchInsight() {
     if (!refs.searchInsight) {
       return;
@@ -3604,7 +3944,7 @@
   }
 
   function renderFilterControls() {
-    populateSelectOptions(refs.filterInvoiceStatus, uniqueFieldValues("invoiceStatus").map(formatStatus));
+    populateSelectOptions(refs.filterInvoiceStatus, INVOICE_STATUS_FILTER_OPTIONS);
     populateSelectOptions(refs.filterProjectManager, uniqueFieldValues("ownerName"));
     const amountValues = dedupeStrings(
       getAccessibleInvoices().map((invoice) => String(Number(invoice.amount || 0)))
@@ -3856,7 +4196,9 @@
     const workspaceCandidates = getWorkspaceCandidates();
     const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
     try {
-      const payload = await state.client.data.invoke("syncInvoicesFromSource", {
+      const payload = await state.client.data.invoke(
+        "syncInvoicesFromSource",
+        wrapServerActionRequestPayload({
         sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
         accountName: state.context.accountName || "",
         workspaceBaseUrl,
@@ -3874,7 +4216,8 @@
             "",
           workspaceBaseUrl,
         },
-      });
+        })
+      );
       const result = unwrapServerActionResponse(payload);
       if (!result || result.ok === false) {
         return null;
@@ -3890,20 +4233,35 @@
   }
 
   async function loadInvoicePreview(invoice) {
-    const cacheKey = String(invoice.id || invoice.invoiceId || invoice.invoiceNumber || "");
+    const targetInvoice = invoice && typeof invoice === "object" ? invoice : {};
+    const cacheKey = String(
+      targetInvoice.id || targetInvoice.invoiceId || targetInvoice.invoiceNumber || ""
+    );
     try {
+      setPreviewProbe({
+        invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
+        invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
+        outcome: "load-preview-start",
+      });
       const cached = cacheKey ? state.invoicePreviewCache[cacheKey] : null;
       if (cached && cached.pdfDataUrl && cached.isNativePdf) {
+        setPreviewDebugState("cache-pdf-data-url", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+        });
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
         setModalPdfFrameSrc(cached.pdfDataUrl);
         return;
       }
       const preloadedPdfDataUrl = normalizePreviewPdfDataUrl({
-        pdfDataUrl: invoice && invoice.previewPdfDataUrl,
-        pdfBase64: invoice && invoice.previewPdfBase64,
+        pdfDataUrl: targetInvoice.previewPdfDataUrl,
+        pdfBase64: targetInvoice.previewPdfBase64,
       });
       if (preloadedPdfDataUrl) {
+        setPreviewDebugState("preloaded-preview-pdf", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(targetInvoice.previewPdfSource),
+        });
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
             preview: cached && cached.preview ? cached.preview : null,
@@ -3916,46 +4274,140 @@
         setModalPdfFrameSrc(preloadedPdfDataUrl);
         return;
       }
-      const preview =
-        (cached && cached.preview) || (await fetchInvoicePreviewFromServerAction(invoice));
-      const generatedPdfDataUrl =
-        preview && typeof preview === "object" ? normalizePreviewPdfDataUrl(preview) : "";
-      const generatedPdfBytes = generatedPdfDataUrl
-        ? pdfDataUrlToBytes(generatedPdfDataUrl)
+      const serverPdfOnlyPreview = await withTimeout(
+        fetchInvoicePreviewPdfOnlyFromServerAction(targetInvoice),
+        PREVIEW_PDF_ONLY_TIMEOUT_MS,
+        "Server preview PDF request timed out"
+      ).catch((error) => {
+        setPreviewProbe({
+          invoiceId: pickFirst(targetInvoice.invoiceId || targetInvoice.id) || "",
+          invoiceNumber: pickFirst(targetInvoice.invoiceNumber) || "",
+          outcome: "server-pdf-only-timeout",
+          error: simplifyError(error),
+        });
+        return null;
+      });
+      const serverPdfOnlyDataUrl = normalizePreviewPdfDataUrl(serverPdfOnlyPreview || {});
+      const serverPdfOnlyBytes = serverPdfOnlyDataUrl
+        ? pdfDataUrlToBytes(serverPdfOnlyDataUrl)
         : null;
       if (
-        generatedPdfDataUrl &&
-        (looksLikePdfBytes(generatedPdfBytes) ||
-          generatedPdfDataUrl.startsWith("data:application/pdf"))
+        serverPdfOnlyDataUrl &&
+        (looksLikePdfBytes(serverPdfOnlyBytes) ||
+          serverPdfOnlyDataUrl.startsWith("data:application/pdf"))
       ) {
+        setPreviewDebugState("server-pdf-only", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewPdfSource: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.pdfSource),
+        });
         if (cacheKey) {
           state.invoicePreviewCache[cacheKey] = {
-            preview: preview || null,
-            pdfDataUrl: generatedPdfDataUrl,
+            preview: cached && cached.preview ? cached.preview : null,
+            pdfDataUrl: serverPdfOnlyDataUrl,
             isNativePdf: true,
           };
         }
         refs.modalPdfFrame.classList.remove("hidden");
         refs.modalInvoicePreview.classList.add("hidden");
-        setModalPdfFrameSrc(generatedPdfDataUrl);
+        setModalPdfFrameSrc(serverPdfOnlyDataUrl);
         return;
       }
+      const preview =
+        (cached && cached.preview) ||
+        (await withTimeout(
+          fetchInvoicePreviewFromServerAction(targetInvoice),
+          PREVIEW_FETCH_TIMEOUT_MS,
+          "Preview request timed out"
+        ).catch(() => null));
+      const previewPdfDataUrl =
+        preview && typeof preview === "object" ? normalizePreviewPdfDataUrl(preview) : "";
+      const previewPdfSource =
+        preview && typeof preview === "object" ? pickFirst(preview.pdfSource) : "";
+      const previewPdfBytes = previewPdfDataUrl ? pdfDataUrlToBytes(previewPdfDataUrl) : null;
+      if (
+        previewPdfDataUrl &&
+        (looksLikePdfBytes(previewPdfBytes) ||
+          previewPdfDataUrl.startsWith("data:application/pdf"))
+      ) {
+        setPreviewDebugState("server-preview-pdf", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewPdfSource: previewPdfSource || "",
+        });
+        if (cacheKey) {
+          state.invoicePreviewCache[cacheKey] = {
+            preview: preview || null,
+            pdfDataUrl: previewPdfDataUrl,
+            isNativePdf: true,
+          };
+        }
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(previewPdfDataUrl);
+        return;
+      }
+      setPreviewDebugState("server-pdf-only-miss", {
+        invoiceNumber: targetInvoice.invoiceNumber || "",
+        resolvedInvoiceId: pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) || "",
+      });
+      const serverSignedPreviewUrl = normalizePreviewPdfUrl(serverPdfOnlyPreview || {});
+      const previewSignedUrl = normalizePreviewPdfUrl(preview || {});
+      const directPreviewUrl = serverSignedPreviewUrl || previewSignedUrl;
+      if (directPreviewUrl) {
+        setPreviewProbe({
+          invoiceId:
+            pickFirst(serverPdfOnlyPreview && serverPdfOnlyPreview.invoiceId) ||
+            pickFirst(targetInvoice.invoiceId || targetInvoice.id) ||
+            "",
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          outcome: "native-url-fallback",
+          url: directPreviewUrl,
+        });
+        setPreviewDebugState("native-url-fallback", {
+          invoiceNumber: targetInvoice.invoiceNumber || "",
+          previewUrl: directPreviewUrl,
+        });
+        refs.modalPdfFrame.classList.remove("hidden");
+        refs.modalInvoicePreview.classList.add("hidden");
+        setModalPdfFrameSrc(directPreviewUrl);
+        return;
+      }
+      appendLog(
+        "PDF_PREVIEW_FAILED",
+        "Native preview unavailable for invoice " +
+          (targetInvoice.invoiceNumber || targetInvoice.id || "unknown") +
+          ". Fallback rendering is disabled to prevent mock invoice previews."
+      );
+      setPreviewDebugState("native-unavailable", {
+        invoiceNumber: targetInvoice.invoiceNumber || "",
+        previewPdfSource: previewPdfSource || "",
+      });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
-        invoice,
-        preview,
+        targetInvoice,
+        preview || null,
         false,
-        "Unable to load native invoice PDF preview right now."
+        "Unable to load native invoice PDF preview right now. This app now blocks mock fallback previews."
       );
     } catch (_error) {
+      appendLog(
+        "PDF_PREVIEW_FAILED",
+        "Native preview failed for invoice " +
+          (targetInvoice.invoiceNumber || targetInvoice.id || "unknown") +
+          ".",
+        _error
+      );
+      setPreviewDebugState("native-failed", {
+        invoiceNumber: targetInvoice.invoiceNumber || "",
+        error: simplifyError(_error),
+      });
       refs.modalPdfFrame.classList.add("hidden");
       refs.modalInvoicePreview.classList.remove("hidden");
       renderInvoicePreviewContent(
-        invoice,
+        targetInvoice,
         null,
         false,
-        "Unable to load invoice preview details right now."
+        "Unable to load native invoice preview details right now."
       );
     }
   }
@@ -4042,9 +4494,14 @@
     const normalizedBase = baseUrl.replace(/\/+$/, "");
     const encodedId = encodeURIComponent(String(invoiceId).trim());
     return dedupeStrings([
-      `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
-      `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
       `${normalizedBase}/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/api/v1/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/api/1.0/invoices/${encodedId}/attachments/download`,
+      `${normalizedBase}/api/v1/invoices/${encodedId}/generate`,
+      `${normalizedBase}/api/1.0/invoices/${encodedId}/generate`,
+      pickFirst(invoice && invoice.pdfUrl),
+      pickFirst(invoice && invoice.downloadUrl),
+      pickFirst(invoice && invoice.url),
       resolveNativeInvoiceDownloadUrl(invoice),
     ]);
   }
@@ -4055,6 +4512,53 @@
       return "";
     }
     return String(candidates[0] || "").trim();
+  }
+
+  function resolveDirectServerGenerateUrl(invoice) {
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    if (!invoiceId) {
+      return "";
+    }
+    const baseUrl = getCurrentWorkspaceBaseUrl() || getWorkspaceCandidates()[0] || "";
+    if (!baseUrl) {
+      return "";
+    }
+    const normalizedBase = baseUrl.replace(/\/+$/, "");
+    const encodedId = encodeURIComponent(String(invoiceId).trim());
+    return `${normalizedBase}/api/v1/invoices/${encodedId}/generate`;
+  }
+
+  function canUseDirectNativePreviewUrl(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return false;
+    }
+    try {
+      const base = getCurrentWorkspaceBaseUrl() || window.location.origin;
+      const parsed = new URL(text, base);
+      const host = String(parsed.hostname || "").toLowerCase();
+      if (!host.endsWith("rocketlane.com")) {
+        return false;
+      }
+      if (!/^https?:$/i.test(parsed.protocol)) {
+        return false;
+      }
+      const query = String(parsed.search || "").toLowerCase();
+      if (!query) {
+        return false;
+      }
+      return (
+        query.includes("x-amz-signature=") ||
+        query.includes("x-amz-credential=") ||
+        query.includes("x-amz-security-token=") ||
+        query.includes("signature=") ||
+        query.includes("token=") ||
+        query.includes("policy=") ||
+        query.includes("expires=")
+      );
+    } catch (_error) {
+      return false;
+    }
   }
 
   async function tryExtractPdfBytesFromZip(buffer) {
@@ -4080,7 +4584,14 @@
 
   async function fetchNativeInvoicePdfBytes(invoice) {
     const candidateUrls = resolveNativeInvoicePdfUrlCandidates(invoice);
+    const invoiceId = pickFirst(invoice && invoice.invoiceId);
+    const attempts = [];
     if (!candidateUrls.length) {
+      setPreviewProbe({
+        invoiceId,
+        outcome: "no-candidates",
+        attempts,
+      });
       return null;
     }
     for (let i = 0; i < candidateUrls.length; i += 1) {
@@ -4089,6 +4600,13 @@
         const response = await fetch(nativeDownloadUrl, {
           method: "GET",
           credentials: "include",
+        });
+        const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+        attempts.push({
+          url: nativeDownloadUrl,
+          method: "GET",
+          status: Number(response.status || 0),
+          contentType,
         });
         if (!response.ok) {
           continue;
@@ -4099,18 +4617,42 @@
         }
         const bytes = new Uint8Array(buffer);
         if (looksLikePdfBytes(bytes)) {
+          setPreviewProbe({
+            invoiceId,
+            outcome: "pdf",
+            selectedUrl: nativeDownloadUrl,
+            selectedMethod: "GET",
+            attempts,
+          });
           return bytes;
         }
         if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
           const pdfFromZip = await tryExtractPdfBytesFromZip(buffer);
           if (looksLikePdfBytes(pdfFromZip)) {
+            setPreviewProbe({
+              invoiceId,
+              outcome: "pdf-from-zip",
+              selectedUrl: nativeDownloadUrl,
+              selectedMethod: "GET",
+              attempts,
+            });
             return pdfFromZip;
           }
         }
       } catch (_error) {
+        attempts.push({
+          url: nativeDownloadUrl,
+          method: "GET",
+          error: simplifyError(_error),
+        });
         // Keep trying the next candidate endpoint.
       }
     }
+    setPreviewProbe({
+      invoiceId,
+      outcome: "exhausted",
+      attempts,
+    });
     return null;
   }
 
@@ -4306,8 +4848,44 @@
     return "data:application/pdf;base64," + window.btoa(pdf);
   }
 
+  function safeCreateInvoicePdfDataUrl(invoice, preview) {
+    try {
+      return createInvoicePdfDataUrl(invoice, preview);
+    } catch (_error) {
+      return createEmergencyInvoicePdfDataUrl(invoice);
+    }
+  }
+
+  function createEmergencyInvoicePdfDataUrl(invoice) {
+    try {
+      const minimalInvoice = {
+        invoiceNumber: String(
+          pickFirst(invoice && (invoice.invoiceNumber || invoice.invoiceId || invoice.id)) ||
+            "INV-UNKNOWN"
+        ),
+        invoiceName: pickFirst(invoice && invoice.invoiceName) || "Invoice",
+        accountName: pickFirst(invoice && invoice.accountName) || "Rocketlane Account",
+        ownerName: pickFirst(invoice && invoice.ownerName) || "Unassigned",
+        invoiceDate: pickFirst(invoice && (invoice.invoiceDate || invoice.issueDate)) || "",
+        issueDate: pickFirst(invoice && (invoice.issueDate || invoice.invoiceDate)) || "",
+        dueDate: pickFirst(invoice && invoice.dueDate) || "",
+        amount: Number((invoice && invoice.amount) || 0),
+        currencyCode: pickFirst(invoice && invoice.currencyCode) || "USD",
+        associatedEmails: [],
+      };
+      return createInvoicePdfDataUrl(minimalInvoice, {
+        allFields: [],
+        lineItems: [],
+        payments: [],
+      });
+    } catch (_error) {
+      return SAMPLE_PDF_DATA_URL;
+    }
+  }
+
   function escapePdfText(value) {
     return String(value || "")
+      .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, "?")
       .replace(/\\/g, "\\\\")
       .replace(/\(/g, "\\(")
       .replace(/\)/g, "\\)");
@@ -4393,22 +4971,22 @@
     };
     const attempts = [
       {
-        previewInvoiceId,
-        previewInvoiceNumber: "",
-        invoiceId: previewInvoiceId,
-        invoiceNumberForPreview: "",
-      },
-      {
-        previewInvoiceId,
-        previewInvoiceNumber,
-        invoiceId: previewInvoiceId,
-        invoiceNumberForPreview: previewInvoiceNumber,
-      },
-      {
         previewInvoiceId: "",
         previewInvoiceNumber,
         invoiceId: "",
         invoiceNumberForPreview: previewInvoiceNumber,
+      },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber,
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: previewInvoiceNumber,
+      },
+      {
+        previewInvoiceId,
+        previewInvoiceNumber: "",
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: "",
       },
     ];
     let fallbackPreview = null;
@@ -4421,7 +4999,7 @@
       try {
         const payload = await state.client.data.invoke(
           "syncInvoicesFromSource",
-          Object.assign({}, baseRequest, attempt)
+          wrapServerActionRequestPayload(Object.assign({}, baseRequest, attempt))
         );
         const directPreview = extractPreviewFromServerActionPayload(payload);
         const directHasPdf = hasPreviewPdfDataUrl(directPreview);
@@ -4503,6 +5081,389 @@
       previewInvokeAttempts: attemptDiagnostics,
     });
     return fallbackPreview;
+  }
+
+  function extractTargetPreviewPdfFromInvoices(invoices, previewInvoiceId, previewInvoiceNumber) {
+    const rows = Array.isArray(invoices) ? invoices : [];
+    const matchedInvoice = rows.find((candidate) =>
+      invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)
+    );
+    if (!matchedInvoice) {
+      return null;
+    }
+    const matchedPdfDataUrl = normalizePreviewPdfDataUrl(matchedInvoice);
+    const matchedPdfUrl = normalizePreviewPdfUrl(matchedInvoice);
+    if (!matchedPdfDataUrl && !matchedPdfUrl) {
+      return null;
+    }
+    return {
+      invoiceId: pickFirst(matchedInvoice.invoiceId || matchedInvoice.id || previewInvoiceId),
+      invoiceNumber: pickFirst(matchedInvoice.invoiceNumber || previewInvoiceNumber),
+      pdfDataUrl: matchedPdfDataUrl,
+      pdfBase64: pickFirst(matchedInvoice.previewPdfBase64 || matchedInvoice.pdfBase64 || ""),
+      pdfSource: pickFirst(matchedInvoice.previewPdfSource || matchedInvoice.pdfSource || ""),
+      pdfUrl: matchedPdfUrl,
+    };
+  }
+
+  function collectInvoiceCandidatesFromPayload(payload) {
+    const queue = [payload];
+    const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+    const candidates = [];
+    while (queue.length) {
+      const current = queue.shift();
+      if (!current) {
+        continue;
+      }
+      if (typeof current === "string") {
+        const parsed = tryParseJsonObject(current);
+        if (parsed) {
+          queue.push(parsed);
+        }
+        continue;
+      }
+      if (typeof current !== "object") {
+        continue;
+      }
+      if (visited) {
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+      }
+      if (Array.isArray(current)) {
+        for (let i = 0; i < current.length; i += 1) {
+          queue.push(current[i]);
+        }
+        continue;
+      }
+      const maybeInvoiceId = pickFirst(
+        current.invoiceId || current.id || current.invoiceID || current._id
+      );
+      const maybeInvoiceNumber = pickFirst(
+        current.invoiceNumber || current.invoiceNo || current.number
+      );
+      const hasPreviewField =
+        typeof current.previewPdfDataUrl === "string" ||
+        typeof current.previewPdfBase64 === "string" ||
+        typeof current.previewPdfUrl === "string" ||
+        typeof current.pdfDataUrl === "string" ||
+        typeof current.pdfBase64 === "string" ||
+        typeof current.pdfUrl === "string";
+      if ((maybeInvoiceId || maybeInvoiceNumber) && hasPreviewField) {
+        candidates.push(current);
+      }
+      const nested = [
+        current.data,
+        current.response,
+        current.result,
+        current.payload,
+        current.body,
+        current.item,
+        current.value,
+        current.invoices,
+        current.items,
+        current.results,
+        current.content,
+      ];
+      const keys = Object.keys(current);
+      for (let i = 0; i < keys.length; i += 1) {
+        nested.push(current[keys[i]]);
+      }
+      for (let i = 0; i < nested.length; i += 1) {
+        if (nested[i] !== undefined) {
+          queue.push(nested[i]);
+        }
+      }
+    }
+    return candidates;
+  }
+
+  function extractTargetPreviewPdfFromPayload(payload, previewInvoiceId, previewInvoiceNumber) {
+    const candidates = collectInvoiceCandidatesFromPayload(payload);
+    for (let i = 0; i < candidates.length; i += 1) {
+      const candidate = candidates[i];
+      if (!invoiceMatchesPreviewTarget(candidate, previewInvoiceId, previewInvoiceNumber)) {
+        continue;
+      }
+      const pdfDataUrl = normalizePreviewPdfDataUrl(candidate);
+      const pdfUrl = normalizePreviewPdfUrl(candidate);
+      if (!pdfDataUrl && !pdfUrl) {
+        continue;
+      }
+      return {
+        invoiceId: pickFirst(candidate.invoiceId || candidate.id || previewInvoiceId),
+        invoiceNumber: pickFirst(candidate.invoiceNumber || previewInvoiceNumber),
+        pdfDataUrl,
+        pdfBase64: pickFirst(candidate.previewPdfBase64 || candidate.pdfBase64 || ""),
+        pdfSource: pickFirst(candidate.previewPdfSource || candidate.pdfSource || ""),
+        pdfUrl,
+      };
+    }
+    return null;
+  }
+
+  async function fetchInvoicePreviewPdfOnlyFromServerAction(invoice) {
+    if (
+      !state.connected ||
+      !state.client ||
+      !state.client.data ||
+      typeof state.client.data.invoke !== "function"
+    ) {
+      setPreviewProbe({
+        invoiceId: pickFirst(invoice && (invoice.invoiceId || invoice.id)) || "",
+        invoiceNumber: pickFirst(invoice && invoice.invoiceNumber) || "",
+        outcome: "server-pdf-only-no-client",
+      });
+      return null;
+    }
+    const previewInvoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id || ""));
+    const previewInvoiceNumber = pickFirst(invoice && (invoice.invoiceNumber || ""));
+    if (!previewInvoiceId && !previewInvoiceNumber) {
+      setPreviewProbe({
+        invoiceId: "",
+        invoiceNumber: "",
+        outcome: "server-pdf-only-missing-identifiers",
+      });
+      return null;
+    }
+    const workspaceCandidates = getWorkspaceCandidates();
+    const workspaceBaseUrl = getCurrentWorkspaceBaseUrl() || workspaceCandidates[0] || "";
+    try {
+      setPreviewProbe({
+        invoiceId: previewInvoiceId || "",
+        invoiceNumber: previewInvoiceNumber || "",
+        outcome: "server-pdf-only-start",
+      });
+      const requestPayload = wrapServerActionRequestPayload({
+        requestMode: "preview-pdf",
+        sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+        accountName: state.context.accountName || "",
+        workspaceBaseUrl,
+        workspaceCandidates,
+        invoiceId: previewInvoiceId,
+        invoiceNumberForPreview: previewInvoiceNumber,
+        preview: {
+          invoiceId: previewInvoiceId,
+          invoiceNumber: previewInvoiceNumber,
+        },
+        previewSourceProjectId: pickFirst(invoice && invoice.sourceProjectId),
+        viewerContext: {
+          userId: state.context.userId || "",
+          userEmail: state.context.userEmail || "",
+          userRole: state.context.userRole || "",
+          userName: state.context.userName || "",
+          permission:
+            (state.permissionHint && state.permissionHint.permission) ||
+            state.access.permission ||
+            "",
+          workspaceBaseUrl,
+        },
+      });
+      let payload = null;
+      try {
+        payload = await state.client.data.invoke(
+          "syncInvoicePreviewPayload",
+          requestPayload
+        );
+      } catch (previewActionError) {
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          invoiceNumber: previewInvoiceNumber || "",
+          outcome: "server-pdf-only-preview-action-fallback",
+          error: simplifyError(previewActionError),
+        });
+        payload = await state.client.data.invoke(
+          "syncInvoicesFromSource",
+          wrapServerActionRequestPayload({
+            sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+            accountName: state.context.accountName || "",
+            workspaceBaseUrl,
+            workspaceCandidates,
+            prefetchPreviewPdfs: true,
+            disablePreviewMode: true,
+            prefetchInvoiceId: previewInvoiceId,
+            prefetchInvoiceNumber: previewInvoiceNumber,
+            viewerContext: {
+              userId: state.context.userId || "",
+              userEmail: state.context.userEmail || "",
+              userRole: state.context.userRole || "",
+              userName: state.context.userName || "",
+              permission:
+                (state.permissionHint && state.permissionHint.permission) ||
+                state.access.permission ||
+                "",
+              workspaceBaseUrl,
+            },
+          })
+        );
+      }
+      const directPdf = extractPreviewPdfOnlyFromPayload(payload);
+      if (directPdf && (directPdf.pdfDataUrl || directPdf.pdfUrl)) {
+        const directMatchesTarget = invoiceMatchesPreviewTarget(
+          {
+            invoiceId: directPdf.invoiceId,
+            invoiceNumber: previewInvoiceNumber,
+          },
+          previewInvoiceId,
+          previewInvoiceNumber
+        );
+        if (!directMatchesTarget && previewInvoiceId) {
+          // Continue parsing structured payload to avoid rendering the wrong invoice PDF.
+        } else {
+          setPreviewProbe({
+            invoiceId: pickFirst(directPdf.invoiceId || previewInvoiceId) || "",
+            invoiceNumber: previewInvoiceNumber || "",
+            outcome: "server-pdf-only-success",
+            source: pickFirst(directPdf.pdfSource || ""),
+            hasDataUrl: Boolean(directPdf.pdfDataUrl),
+            hasSignedUrl: Boolean(directPdf.pdfUrl),
+          });
+          return directPdf;
+        }
+      }
+      const matchedFromPayload = extractTargetPreviewPdfFromPayload(
+        payload,
+        previewInvoiceId,
+        previewInvoiceNumber
+      );
+      if (matchedFromPayload) {
+        setPreviewProbe({
+          invoiceId: matchedFromPayload.invoiceId || "",
+          invoiceNumber: matchedFromPayload.invoiceNumber || "",
+          outcome: "server-pdf-only-success-from-payload-candidates",
+          hasDataUrl: Boolean(matchedFromPayload.pdfDataUrl),
+          hasSignedUrl: Boolean(matchedFromPayload.pdfUrl),
+        });
+        return {
+          invoiceId: matchedFromPayload.invoiceId,
+          pdfDataUrl: matchedFromPayload.pdfDataUrl,
+          pdfBase64: matchedFromPayload.pdfBase64 || "",
+          pdfSource: matchedFromPayload.pdfSource || "",
+          pdfUrl: matchedFromPayload.pdfUrl || "",
+        };
+      }
+      const result = unwrapServerActionResponse(payload);
+      if (!result || result.ok === false) {
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          invoiceNumber: previewInvoiceNumber || "",
+          outcome: "server-pdf-only-result-error",
+          error: result && result.error ? String(result.error) : "",
+          diagnostics: result && result.diagnostics ? result.diagnostics : null,
+        });
+      }
+      const matchedFromResult = extractTargetPreviewPdfFromInvoices(
+        result && result.invoices,
+        previewInvoiceId,
+        previewInvoiceNumber
+      );
+      if (matchedFromResult) {
+        setPreviewProbe({
+          invoiceId: matchedFromResult.invoiceId || "",
+          invoiceNumber: matchedFromResult.invoiceNumber || "",
+          outcome: "server-pdf-only-success-from-invoices",
+          hasDataUrl: Boolean(matchedFromResult.pdfDataUrl),
+          hasSignedUrl: Boolean(matchedFromResult.pdfUrl),
+        });
+        return {
+          invoiceId: matchedFromResult.invoiceId,
+          pdfDataUrl: matchedFromResult.pdfDataUrl,
+          pdfBase64: matchedFromResult.pdfBase64 || "",
+          pdfSource: matchedFromResult.pdfSource || "",
+          pdfUrl: matchedFromResult.pdfUrl || "",
+        };
+      }
+      const previewPdf =
+        result && result.previewPdf && typeof result.previewPdf === "object"
+          ? result.previewPdf
+          : {};
+      const pdfDataUrl = normalizePreviewPdfDataUrl(previewPdf);
+      const pdfUrl = normalizePreviewPdfUrl(previewPdf);
+      if (!pdfDataUrl && !pdfUrl) {
+        let fallbackError = "";
+        try {
+          const prefetchPayload = wrapServerActionRequestPayload({
+            sourceProjectNames: SOURCE_PROJECT_NAMES.slice(),
+            accountName: state.context.accountName || "",
+            workspaceBaseUrl,
+            workspaceCandidates,
+            prefetchPreviewPdfs: true,
+            disablePreviewMode: true,
+            prefetchInvoiceId: previewInvoiceId,
+            prefetchInvoiceNumber: previewInvoiceNumber,
+            viewerContext: {
+              userId: state.context.userId || "",
+              userEmail: state.context.userEmail || "",
+              userRole: state.context.userRole || "",
+              userName: state.context.userName || "",
+              permission:
+                (state.permissionHint && state.permissionHint.permission) ||
+                state.access.permission ||
+                "",
+              workspaceBaseUrl,
+            },
+          });
+          const fallbackPayload = await state.client.data.invoke(
+            "syncInvoicesFromSource",
+            prefetchPayload
+          );
+          const fallbackResult = unwrapServerActionResponse(fallbackPayload);
+          const matchedFromFallback = extractTargetPreviewPdfFromInvoices(
+            fallbackResult && fallbackResult.invoices,
+            previewInvoiceId,
+            previewInvoiceNumber
+          );
+          if (matchedFromFallback) {
+            setPreviewProbe({
+              invoiceId: matchedFromFallback.invoiceId || "",
+              invoiceNumber: matchedFromFallback.invoiceNumber || "",
+              outcome: "server-pdf-only-success-from-prefetch-fallback",
+              hasDataUrl: Boolean(matchedFromFallback.pdfDataUrl),
+              hasSignedUrl: Boolean(matchedFromFallback.pdfUrl),
+            });
+            return {
+              invoiceId: matchedFromFallback.invoiceId,
+              pdfDataUrl: matchedFromFallback.pdfDataUrl,
+              pdfBase64: matchedFromFallback.pdfBase64 || "",
+              pdfSource: matchedFromFallback.pdfSource || "",
+              pdfUrl: matchedFromFallback.pdfUrl || "",
+            };
+          }
+        } catch (prefetchError) {
+          fallbackError = simplifyError(prefetchError);
+        }
+        setPreviewProbe({
+          invoiceId: previewInvoiceId || "",
+          outcome: "server-pdf-only-no-pdf",
+          fallbackError,
+          diagnostics: result && result.diagnostics ? result.diagnostics : null,
+        });
+        return null;
+      }
+      setPreviewProbe({
+        invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId) || "",
+        invoiceNumber: previewInvoiceNumber || "",
+        outcome: "server-pdf-only-success",
+        source: pickFirst(previewPdf.pdfSource || ""),
+        hasDataUrl: Boolean(pdfDataUrl),
+        hasSignedUrl: Boolean(pdfUrl),
+      });
+      return {
+        invoiceId: pickFirst(previewPdf.invoiceId || previewInvoiceId),
+        pdfDataUrl,
+        pdfBase64: pickFirst(previewPdf.pdfBase64 || ""),
+        pdfSource: pickFirst(previewPdf.pdfSource || ""),
+        pdfUrl,
+      };
+    } catch (_error) {
+      setPreviewProbe({
+        invoiceId: previewInvoiceId || "",
+        outcome: "server-pdf-only-throw",
+        error: simplifyError(_error),
+      });
+      return null;
+    }
   }
 
   function renderInvoicePreviewContent(invoice, preview, isLoading, errorText) {
@@ -4652,6 +5613,203 @@
       .replace(/'/g, "&#39;");
   }
 
+  async function withTimeout(promise, timeoutMs, label) {
+    const duration = Number(timeoutMs || 0);
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return promise;
+    }
+    let timer = 0;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = window.setTimeout(() => {
+        reject(new Error(String(label || "Timed out")));
+      }, duration);
+    });
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    }
+  }
+
+  async function mapWithConcurrency(items, concurrency, mapper) {
+    const source = Array.isArray(items) ? items : [];
+    if (!source.length) {
+      return [];
+    }
+    const limit = Math.max(1, Number(concurrency || 1));
+    const output = new Array(source.length);
+    let cursor = 0;
+    const workers = Array.from({ length: Math.min(limit, source.length) }, () =>
+      (async () => {
+        while (cursor < source.length) {
+          const index = cursor;
+          cursor += 1;
+          try {
+            output[index] = await mapper(source[index], index);
+          } catch (error) {
+            output[index] = {
+              __error: simplifyError(error),
+            };
+          }
+        }
+      })()
+    );
+    await Promise.all(workers);
+    return output;
+  }
+
+  function parseHubProgramFromDescription(description) {
+    const text = String(description || "");
+    if (!text) {
+      return { hub: [], program: [] };
+    }
+    const hubValues = [];
+    const programValues = [];
+    const hubPattern = /(?:^|\||\n|\r)\s*hub\s*:\s*([^|\n\r]+)/gi;
+    const programPattern = /(?:^|\||\n|\r)\s*program\s*:\s*([^|\n\r]+)/gi;
+    let match = null;
+    while ((match = hubPattern.exec(text)) != null) {
+      const value = pickFirst(match[1] || "");
+      if (value) {
+        hubValues.push(value);
+      }
+    }
+    while ((match = programPattern.exec(text)) != null) {
+      const value = pickFirst(match[1] || "");
+      if (value) {
+        programValues.push(value);
+      }
+    }
+    return {
+      hub: dedupeStrings(hubValues),
+      program: dedupeStrings(programValues),
+    };
+  }
+
+  function extractHubProgramFromLineItems(lineItems) {
+    const rows = Array.isArray(lineItems) ? lineItems : [];
+    const hubValues = [];
+    const programValues = [];
+    rows.forEach((line) => {
+      if (!line || typeof line !== "object") {
+        return;
+      }
+      const lineAliasValues = extractInvoiceFieldAliasValues(line);
+      if (Array.isArray(lineAliasValues.hub)) {
+        lineAliasValues.hub.forEach((value) => hubValues.push(value));
+      }
+      if (Array.isArray(lineAliasValues.program)) {
+        lineAliasValues.program.forEach((value) => programValues.push(value));
+      }
+      const parsedFromDescription = parseHubProgramFromDescription(
+        pickFirst(line.description || line.name || line.title || "")
+      );
+      if (Array.isArray(parsedFromDescription.hub)) {
+        parsedFromDescription.hub.forEach((value) => hubValues.push(value));
+      }
+      if (Array.isArray(parsedFromDescription.program)) {
+        parsedFromDescription.program.forEach((value) => programValues.push(value));
+      }
+    });
+    return {
+      hub: dedupeStrings(hubValues),
+      program: dedupeStrings(programValues),
+    };
+  }
+
+  function sumPreviewLineItemQuantity(lineItems) {
+    return (Array.isArray(lineItems) ? lineItems : []).reduce((sum, line) => {
+      const quantity = parseNumericValue(
+        pickFirst(
+          line &&
+            (line.quantity ||
+              line.qty ||
+              line.quantityHours ||
+              (line.fields && (line.fields.quantity || line.fields.qty)))
+        )
+      );
+      return sum + (Number.isFinite(quantity) ? quantity : 0);
+    }, 0);
+  }
+
+  function resolveInvoiceExportSummary(invoice, preview) {
+    const baseInvoice = invoice && typeof invoice === "object" ? invoice : {};
+    const previewData = preview && typeof preview === "object" ? preview : {};
+    const invoiceAliasValues = extractInvoiceFieldAliasValues(baseInvoice);
+    const previewAliasValues = extractInvoiceFieldAliasValues(previewData);
+    const lineItemValues = extractHubProgramFromLineItems(previewData.lineItems);
+    const quantityFromInvoice = Number(baseInvoice.quantityHours || 0);
+    const quantityFromInvoiceAliases = Array.isArray(invoiceAliasValues.quantityHours)
+      ? invoiceAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
+      : 0;
+    const quantityFromPreviewAliases = Array.isArray(previewAliasValues.quantityHours)
+      ? previewAliasValues.quantityHours.reduce((sum, value) => sum + parseNumericValue(value), 0)
+      : 0;
+    const quantityFromLines = sumPreviewLineItemQuantity(previewData.lineItems);
+    const quantityHours =
+      (Number.isFinite(quantityFromInvoice) && quantityFromInvoice > 0 && quantityFromInvoice) ||
+      (Number.isFinite(quantityFromInvoiceAliases) &&
+        quantityFromInvoiceAliases > 0 &&
+        quantityFromInvoiceAliases) ||
+      (Number.isFinite(quantityFromPreviewAliases) &&
+        quantityFromPreviewAliases > 0 &&
+        quantityFromPreviewAliases) ||
+      (Number.isFinite(quantityFromLines) && quantityFromLines > 0 && quantityFromLines) ||
+      0;
+    const hub = pickFirst(
+      baseInvoice.hub ||
+        (invoiceAliasValues.hub && invoiceAliasValues.hub[0]) ||
+        (previewAliasValues.hub && previewAliasValues.hub[0]) ||
+        (lineItemValues.hub && lineItemValues.hub[0]) ||
+        ""
+    );
+    const program = pickFirst(
+      baseInvoice.program ||
+        (invoiceAliasValues.program && invoiceAliasValues.program[0]) ||
+        (previewAliasValues.program && previewAliasValues.program[0]) ||
+        (lineItemValues.program && lineItemValues.program[0]) ||
+        ""
+    );
+    const contractName = pickFirst(
+      baseInvoice.contractName ||
+        (invoiceAliasValues.contractName && invoiceAliasValues.contractName[0]) ||
+        (previewAliasValues.contractName && previewAliasValues.contractName[0]) ||
+        ""
+    );
+    return {
+      invoiceStatus: formatStatus(baseInvoice.invoiceStatus || previewData.status || ""),
+      invoiceNumber: pickFirst(baseInvoice.invoiceNumber || previewData.invoiceNumber || ""),
+      ownerName: pickFirst(
+        baseInvoice.ownerName ||
+          (invoiceAliasValues.createdBy && invoiceAliasValues.createdBy[0]) ||
+          (previewAliasValues.createdBy && previewAliasValues.createdBy[0]) ||
+          ""
+      ),
+      amountLabel: formatAmount(
+        baseInvoice.amount,
+        baseInvoice.currencyCode || previewData.currencyCode,
+        baseInvoice.currencySymbol || previewData.currencySymbol
+      ),
+      accountName: pickFirst(
+        baseInvoice.accountName ||
+          (invoiceAliasValues.accountName && invoiceAliasValues.accountName[0]) ||
+          (previewAliasValues.accountName && previewAliasValues.accountName[0]) ||
+          previewData.accountName ||
+          ""
+      ),
+      contractName,
+      hub,
+      program,
+      issueDateLabel: formatDate(
+        previewData.issueDate || baseInvoice.issueDate || baseInvoice.invoiceDate
+      ),
+      dueDateLabel: formatDate(previewData.dueDate || baseInvoice.dueDate),
+      hoursLabel: formatHours(quantityHours),
+    };
+  }
+
   async function onDownloadZip() {
     const JSZipCtor = window.JSZip;
     if (!JSZipCtor) {
@@ -4691,82 +5849,160 @@
     try {
       const zip = new JSZipCtor();
       const csvRows = [
-      [
-        "Invoice Status",
-        "Invoice Number",
-        "Expert Advisor",
-        "Amount",
-        "Client",
-        "Contract Name",
-        "Hub",
-        "Program",
-        "Issue Date",
-        "Due Date",
-        "Hours",
-      ],
+        [
+          "Invoice Status",
+          "Invoice Number",
+          "Expert Advisor",
+          "Amount",
+          "Client",
+          "Contract Name",
+          "Hub",
+          "Program",
+          "Issue Date",
+          "Due Date",
+          "Hours",
+        ],
       ];
       let pdfFileCount = 0;
-      let missingPdfCount = 0;
+      let missingNativePdfCount = 0;
+      let processedCount = 0;
 
-      for (let i = 0; i < invoicesToExport.length; i += 1) {
-        const invoice = invoicesToExport[i];
-        let preview = null;
-        let nativePdfBytes = null;
-        try {
-          preview = await fetchInvoicePreviewFromServerAction(invoice);
-        } catch (_error) {
-          preview = null;
-        }
-        const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
-          pdfDataUrl:
-            (preview && preview.pdfDataUrl) ||
-            invoice.previewPdfDataUrl ||
-            "",
-          pdfBase64:
-            (preview && preview.pdfBase64) ||
-            invoice.previewPdfBase64 ||
-            "",
-        });
-        if (preferredPdfDataUrl) {
-          nativePdfBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
-        }
-        csvRows.push([
-        formatStatus(invoice.invoiceStatus),
-        invoice.invoiceNumber,
-        invoice.ownerName || "",
-        formatAmount(invoice.amount, invoice.currencyCode, invoice.currencySymbol),
-        invoice.accountName,
-        invoice.contractName || "",
-        invoice.hub || "",
-        invoice.program || "",
-        formatDate(invoice.issueDate || invoice.invoiceDate),
-        formatDate(invoice.dueDate),
-        formatHours(invoice.quantityHours),
-        ]);
-        let pdfBytesToWrite = null;
-        if (looksLikePdfBytes(nativePdfBytes)) {
-          pdfBytesToWrite = nativePdfBytes;
-        } else {
-          const generatedPdfDataUrl = createInvoicePdfDataUrl(invoice, preview);
-          const generatedPdfBytes = pdfDataUrlToBytes(generatedPdfDataUrl);
-          if (looksLikePdfBytes(generatedPdfBytes)) {
-            pdfBytesToWrite = generatedPdfBytes;
+      const exportResults = await mapWithConcurrency(
+        invoicesToExport,
+        ZIP_PREVIEW_FETCH_CONCURRENCY,
+        async (invoice) => {
+          const invoiceRef = invoice && (invoice.invoiceNumber || invoice.id || "unknown");
+          let preview = null;
+          let invoiceError = "";
+          let pdfBytesToWrite = null;
+          try {
+            const cachedPdfDataUrl = normalizePreviewPdfDataUrl({
+              pdfDataUrl: invoice.previewPdfDataUrl || "",
+              pdfBase64: invoice.previewPdfBase64 || "",
+            });
+            if (cachedPdfDataUrl) {
+              const cachedBytes = pdfDataUrlToBytes(cachedPdfDataUrl);
+              if (looksLikePdfBytes(cachedBytes)) {
+                pdfBytesToWrite = cachedBytes;
+              }
+            }
+
+            if (!pdfBytesToWrite) {
+              let attempt = 0;
+              while (attempt < ZIP_PREVIEW_RETRY_ATTEMPTS && !pdfBytesToWrite) {
+                attempt += 1;
+                try {
+                  preview = await withTimeout(
+                    fetchInvoicePreviewPdfOnlyFromServerAction(invoice),
+                    ZIP_PREVIEW_REQUEST_TIMEOUT_MS,
+                    "Timed out fetching ZIP preview PDF"
+                  );
+                  const preferredPdfDataUrl = normalizePreviewPdfDataUrl({
+                    pdfDataUrl: (preview && preview.pdfDataUrl) || "",
+                    pdfBase64: (preview && preview.pdfBase64) || "",
+                  });
+                  if (preferredPdfDataUrl) {
+                    const candidateBytes = pdfDataUrlToBytes(preferredPdfDataUrl);
+                    if (looksLikePdfBytes(candidateBytes)) {
+                      pdfBytesToWrite = candidateBytes;
+                      break;
+                    }
+                  }
+                  if (preview && normalizePreviewPdfUrl(preview)) {
+                    const directBytes = await withTimeout(
+                      fetchNativeInvoicePdfBytes(
+                        Object.assign({}, invoice, {
+                          pdfUrl: normalizePreviewPdfUrl(preview),
+                        })
+                      ),
+                      ZIP_PREVIEW_REQUEST_TIMEOUT_MS,
+                      "Timed out fetching native signed PDF URL"
+                    );
+                    if (looksLikePdfBytes(directBytes)) {
+                      pdfBytesToWrite = directBytes;
+                      break;
+                    }
+                  }
+                } catch (zipPreviewError) {
+                  invoiceError = simplifyError(zipPreviewError);
+                }
+                if (!pdfBytesToWrite && attempt < ZIP_PREVIEW_RETRY_ATTEMPTS) {
+                  await sleepMs(
+                    ZIP_PREVIEW_RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 1)
+                  );
+                }
+              }
+            }
+          } catch (error) {
+            invoiceError = simplifyError(error);
           }
+
+          processedCount += 1;
+          if (refs.exportInsight) {
+            refs.exportInsight.textContent =
+              "Preparing ZIP export... (" +
+              processedCount +
+              "/" +
+              invoicesToExport.length +
+              ")";
+          }
+          return {
+            invoice,
+            pdfBytesToWrite,
+            summary: resolveInvoiceExportSummary(invoice, preview),
+            error: invoiceError,
+            invoiceRef,
+          };
         }
-        if (pdfBytesToWrite) {
-          zip.file(
-            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
-            pdfBytesToWrite
-          );
-          pdfFileCount += 1;
-        } else {
-          missingPdfCount += 1;
+      );
+
+      const missingNativeInvoiceNumbers = [];
+      exportResults.forEach((result) => {
+        const invoice = result && result.invoice;
+        if (!invoice) {
+          missingNativePdfCount += 1;
           appendLog(
             "PDF_PREVIEW_FAILED",
-            "Skipped non-PDF export payload for invoice " + (invoice.invoiceNumber || invoice.id || "unknown")
+            "Skipped invoice export due to unexpected processing error."
+          );
+          return;
+        }
+        const summary =
+          (result && result.summary) || resolveInvoiceExportSummary(invoice, null);
+        csvRows.push([
+          summary.invoiceStatus,
+          summary.invoiceNumber,
+          summary.ownerName,
+          summary.amountLabel,
+          summary.accountName,
+          summary.contractName,
+          summary.hub,
+          summary.program,
+          summary.issueDateLabel,
+          summary.dueDateLabel,
+          summary.hoursLabel,
+        ]);
+        if (result.pdfBytesToWrite) {
+          zip.file(
+            "invoices/" + safeFileName(invoice.invoiceNumber || invoice.id || "invoice") + ".pdf",
+            result.pdfBytesToWrite
+          );
+          pdfFileCount += 1;
+          return;
+        }
+        missingNativePdfCount += 1;
+        missingNativeInvoiceNumbers.push(
+          String(invoice.invoiceNumber || invoice.id || "unknown")
+        );
+        if (result && result.error) {
+          appendLog(
+            "PDF_PREVIEW_FAILED",
+            "Unable to prepare native PDF for invoice " +
+              (invoice.invoiceNumber || invoice.id || "unknown"),
+            result.error
           );
         }
-      }
+      });
 
       zip.file("invoices.csv", toCsv(csvRows));
       const modeLabel = state.exportMode === "selected" ? "selected" : state.exportMode;
@@ -4774,8 +6010,22 @@
       const fileName =
         "invoice-export-" + modeLabel + "-" + new Date().toISOString().slice(0, 10) + ".zip";
       downloadBlob(blob, fileName);
-      refs.exportInsight.textContent =
-        "Downloaded " + invoicesToExport.length + " invoice(s) to " + fileName + ".";
+      if (missingNativePdfCount > 0) {
+        refs.exportInsight.textContent =
+          "Downloaded " +
+          pdfFileCount +
+          " native invoice PDF(s) to " +
+          fileName +
+          ". " +
+          missingNativePdfCount +
+          " invoice(s) were skipped (native PDF unavailable): " +
+          missingNativeInvoiceNumbers.slice(0, 5).join(", ") +
+          (missingNativeInvoiceNumbers.length > 5 ? "..." : "") +
+          ".";
+      } else {
+        refs.exportInsight.textContent =
+          "Downloaded " + invoicesToExport.length + " invoice(s) to " + fileName + ".";
+      }
     } catch (error) {
       appendLog("SOURCE_FETCH_FAILED", "Unable to generate invoice ZIP export.", error);
       refs.exportInsight.textContent =
@@ -4785,6 +6035,14 @@
         refs.downloadZipButton.disabled = false;
       }
     }
+  }
+
+  async function sleepMs(ms) {
+    const delay = Number(ms || 0);
+    if (!Number.isFinite(delay) || delay <= 0) {
+      return;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, delay));
   }
 
   function downloadBlob(blob, fileName) {
@@ -5259,6 +6517,7 @@
 
     if (
       /(^|\b)(account|workspace)\s*admin(istrator)?(\b|$)/.test(haystack) ||
+      /(^|\b)finance(\b|$)/.test(haystack) ||
       /(^|\b)admin(\b|$)/.test(haystack)
     ) {
       return "admin";
@@ -5276,24 +6535,13 @@
   }
 
   function normalizePermissionRole(value) {
-    const text = String(value || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[_-]+/g, " ");
-    if (!text) {
-      return "";
-    }
-    if (
-      /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text) ||
-      text === "admin" ||
-      text === "administrator"
-    ) {
+    if (hasFullInvoiceAccessLabel(value)) {
       return "admin";
     }
     return "non_admin";
   }
 
-  function isLikelyAdminLabel(value) {
+  function hasFullInvoiceAccessLabel(value) {
     const text = String(value || "")
       .trim()
       .toLowerCase()
@@ -5301,7 +6549,19 @@
     if (!text) {
       return false;
     }
-    return /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text);
+    if (
+      /(^|\b)account\s*admin(istrator)?(\b|$)/.test(text) ||
+      /(^|\b)finance(\b|$)/.test(text) ||
+      text === "admin" ||
+      text === "administrator"
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function isLikelyAdminLabel(value) {
+    return hasFullInvoiceAccessLabel(value);
   }
 
   function collectRoleTokens(value, target, depth) {
@@ -5365,6 +6625,7 @@
     }
     if (
       text === "admin" ||
+      text.includes("finance") ||
       text.includes("account admin") ||
       text.includes("workspace admin") ||
       text.includes("account administrator") ||
@@ -5856,6 +7117,10 @@
   }
 
   function updateDebugState(reason) {
+    const previous =
+      window.__invoiceAccessDebug && typeof window.__invoiceAccessDebug === "object"
+        ? window.__invoiceAccessDebug
+        : {};
     window.__invoiceAccessDebug = {
       reason: reason || "",
       connected: state.connected,
@@ -5874,7 +7139,10 @@
       rawAccount: state.rawAccount,
       teamMembersCount: Array.isArray(state.teamMembers) ? state.teamMembers.length : 0,
       teamMembersPreview: Array.isArray(state.teamMembers) ? state.teamMembers.slice(0, 5) : [],
+      previewProbe: previous.previewProbe || null,
+      previewLast: previous.previewLast || null,
     };
+    publishDebugToHostWindows();
   }
 
   function mergeObjects(a, b) {

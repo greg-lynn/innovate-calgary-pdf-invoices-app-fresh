@@ -1,4 +1,5 @@
 const { syncInvoicesFromSource } = require("./server-actions/sync-invoices-from-source");
+const { syncInvoicePreviewPayload } = require("./server-actions/sync-invoice-preview");
 
 const widgets = [
   {
@@ -23,6 +24,13 @@ module.exports = {
       description:
         "Fetch source projects, invoices, and team members from Rocketlane APIs.",
       run: syncInvoicesFromSource,
+      triggers: ["FE"],
+    },
+    {
+      name: "syncInvoicePreviewPayload",
+      description:
+        "Fetch native invoice preview payload with forced PDF prefetch.",
+      run: syncInvoicePreviewPayload,
       triggers: ["FE"],
     },
   ],

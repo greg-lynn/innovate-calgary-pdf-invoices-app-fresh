@@ -1,6 +1,8 @@
 "use strict";
 
 const { PDFDocument, rgb } = require("pdf-lib");
+const http = require("http");
+const https = require("https");
 
 const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 // Production override: embed API key here so app works without installer prompt.
@@ -8,12 +10,30 @@ const DEFAULT_SOURCE_PROJECTS = ["Expert Advisor Program Invoices"];
 const EMBEDDED_ROCKETLANE_API_KEY = "rl-6657ce9e-ee84-465d-b4df-d97b1239a343";
 const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
+const REQUEST_TIMEOUT_MS = 30000;
+const MAX_HTTP_REDIRECTS = 5;
 const FIELD_ALIAS_GROUPS = {
-  contractName: ["contract name", "contract", "contractname"],
+  contractName: [
+    "contract name",
+    "contract",
+    "contractname",
+    "contract number",
+    "sow",
+    "sow#",
+    "sow no",
+    "sow number",
+  ],
   hub: ["hub"],
   program: ["program"],
-  accountName: ["account"],
-  createdBy: ["created by", "createdby", "creator"],
+  accountName: [
+    "account",
+    "accountname",
+    "account name",
+    "rocketlane account",
+    "client",
+    "client name",
+  ],
+  createdBy: ["created by", "createdby", "creator", "submitted by", "expert advisor"],
   quantityHours: ["quantity", "qty", "hour", "hours"],
 };
 
@@ -62,6 +82,244 @@ function pickFirst(value) {
     return String(value);
   }
   return "";
+}
+
+function parseJsonObject(value) {
+  const text = String(value || "").trim();
+  if (!text || (text[0] !== "{" && text[0] !== "[")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function normalizeLookupKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function collectNestedCandidates(value, maxDepth) {
+  const limit = Number(maxDepth || 6);
+  const queue = [{ node: value, depth: 0 }];
+  const visited = typeof WeakSet === "function" ? new WeakSet() : null;
+  const out = [];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    const node = current.node;
+    const depth = Number(current.depth || 0);
+    if (depth > limit || node == null) {
+      continue;
+    }
+    if (typeof node === "string") {
+      const parsed = parseJsonObject(node);
+      if (parsed) {
+        queue.push({ node: parsed, depth: depth + 1 });
+      }
+      continue;
+    }
+    if (typeof node !== "object") {
+      continue;
+    }
+    if (visited) {
+      if (visited.has(node)) {
+        continue;
+      }
+      visited.add(node);
+    }
+    out.push(node);
+    if (Array.isArray(node)) {
+      node.forEach((item) => queue.push({ node: item, depth: depth + 1 }));
+      continue;
+    }
+    Object.keys(node).forEach((key) => {
+      queue.push({ node: node[key], depth: depth + 1 });
+    });
+  }
+  return out;
+}
+
+function pickFirstValueFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return "";
+  }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
+        continue;
+      }
+      const value = pickFirst(node[nodeKey]);
+      if (value) {
+        return value;
+      }
+    }
+  }
+  return "";
+}
+
+function pickFirstArrayFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return [];
+  }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
+        continue;
+      }
+      const value = node[nodeKey];
+      if (Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+  return [];
+}
+
+function pickFirstObjectFromAny(root, keys) {
+  const searchKeys = Array.isArray(keys) ? keys : [];
+  if (!searchKeys.length) {
+    return null;
+  }
+  const searchTokens = new Set(searchKeys.map((key) => normalizeLookupKey(key)).filter(Boolean));
+  const nodes = collectNestedCandidates(root, 6);
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i];
+    if (!node || typeof node !== "object" || Array.isArray(node)) {
+      continue;
+    }
+    const nodeKeys = Object.keys(node);
+    for (let j = 0; j < nodeKeys.length; j += 1) {
+      const nodeKey = nodeKeys[j];
+      if (!searchTokens.has(normalizeLookupKey(nodeKey))) {
+        continue;
+      }
+      const value = node[nodeKey];
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value;
+      }
+    }
+  }
+  return null;
+}
+
+function parseBooleanFromAny(root, keys, fallback) {
+  const defaultValue = Boolean(fallback);
+  const direct = pickFirstValueFromAny(root, keys);
+  if (!direct) {
+    return defaultValue;
+  }
+  const normalized = String(direct).trim().toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0" || normalized === "no") {
+    return false;
+  }
+  return defaultValue;
+}
+
+function normalizeIncomingRequest(request) {
+  const source = request && typeof request === "object" ? request : {};
+  const previewObject = pickFirstObjectFromAny(source, ["preview"]) || {};
+  const viewerContext = mergeObjects(
+    pickFirstObjectFromAny(source, ["viewerContext"]) || {},
+    source.viewerContext && typeof source.viewerContext === "object" ? source.viewerContext : {}
+  );
+  const invoiceId = pickFirst(
+    source.previewInvoiceId ||
+      source.invoiceId ||
+      previewObject.invoiceId ||
+      pickFirstValueFromAny(source, ["previewInvoiceId", "invoiceId"])
+  );
+  const invoiceNumberForPreview = pickFirst(
+    source.previewInvoiceNumber ||
+      source.invoiceNumberForPreview ||
+      source.invoiceNumber ||
+      previewObject.invoiceNumber ||
+      pickFirstValueFromAny(source, [
+        "previewInvoiceNumber",
+        "invoiceNumberForPreview",
+        "invoiceNumber",
+      ])
+  );
+  const workspaceCandidates = Array.isArray(source.workspaceCandidates)
+    ? source.workspaceCandidates
+    : pickFirstArrayFromAny(source, ["workspaceCandidates"]);
+  return mergeObjects(source, {
+    requestMode: pickFirst(
+      source.requestMode ||
+        source.mode ||
+        pickFirstValueFromAny(source, ["requestMode", "mode"])
+    ),
+    mode: pickFirst(
+      source.mode || source.requestMode || pickFirstValueFromAny(source, ["mode", "requestMode"])
+    ),
+    workspaceBaseUrl: pickFirst(
+      source.workspaceBaseUrl ||
+        source.workspaceUrl ||
+        pickFirstValueFromAny(source, ["workspaceBaseUrl", "workspaceUrl"])
+    ),
+    workspaceCandidates,
+    apiBaseUrl: pickFirst(
+      source.apiBaseUrl || pickFirstValueFromAny(source, ["apiBaseUrl"])
+    ),
+    apiToken: pickFirst(
+      source.apiToken ||
+        pickFirstValueFromAny(source, ["apiToken", "rocketlaneApiToken", "apiKey"])
+    ),
+    accountName: pickFirst(
+      source.accountName || pickFirstValueFromAny(source, ["accountName"])
+    ),
+    searchQuery: pickFirst(
+      source.searchQuery || pickFirstValueFromAny(source, ["searchQuery"])
+    ),
+    invoiceId,
+    previewInvoiceId: invoiceId,
+    invoiceNumberForPreview,
+    previewInvoiceNumber: invoiceNumberForPreview,
+    previewSourceProjectId: pickFirst(
+      source.previewSourceProjectId ||
+        pickFirstValueFromAny(source, ["previewSourceProjectId"])
+    ),
+    searchOnly:
+      source.searchOnly === true || parseBooleanFromAny(source, ["searchOnly"], false),
+    prefetchPreviewPdfs:
+      source.prefetchPreviewPdfs === true ||
+      parseBooleanFromAny(source, ["prefetchPreviewPdfs"], false),
+    disablePreviewMode:
+      source.disablePreviewMode === true ||
+      parseBooleanFromAny(source, ["disablePreviewMode"], false),
+    viewerContext,
+    preview: mergeObjects(previewObject, {
+      invoiceId: pickFirst(previewObject.invoiceId || invoiceId),
+      invoiceNumber: pickFirst(previewObject.invoiceNumber || invoiceNumberForPreview),
+    }),
+  });
 }
 
 function fullName(value) {
@@ -421,6 +679,17 @@ function collectCustomFieldSources(record) {
   if (!record || typeof record !== "object") {
     return [];
   }
+  const mappingSources = Array.isArray(record.invoiceToSourceMappings)
+    ? record.invoiceToSourceMappings
+        .map((mapping) => [
+          mapping,
+          mapping && mapping.project,
+          mapping && mapping.source,
+          mapping && mapping.sourceProject,
+          mapping && mapping.invoice,
+        ])
+        .flat()
+    : [];
   return [
     record.fields,
     record.customFields,
@@ -429,7 +698,12 @@ function collectCustomFieldSources(record) {
     record.projectFields,
     record.invoiceFields,
     record.metadataFields,
-  ].filter((value) => value && (Array.isArray(value) || typeof value === "object"));
+    record.project,
+    record.source,
+    record.sourceProject,
+  ]
+    .concat(mappingSources)
+    .filter((value) => value && (Array.isArray(value) || typeof value === "object"));
 }
 
 function extractCustomFieldAliases(record) {
@@ -727,14 +1001,15 @@ function extractRecordObject(payload, preferredKeys) {
 }
 
 async function requestJson(url, headers) {
-  const response = await fetch(url, {
+  const response = await requestBuffer(url, {
     method: "GET",
     headers,
+    timeoutMs: REQUEST_TIMEOUT_MS,
   });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  const text = await response.text();
+  const text = bufferToUtf8Text(response.body);
   if (!text) {
     return null;
   }
@@ -746,18 +1021,182 @@ async function requestJson(url, headers) {
 }
 
 async function requestBinary(url, headers) {
-  const response = await fetch(url, {
+  const response = await requestBuffer(url, {
     method: "GET",
     headers,
+    timeoutMs: REQUEST_TIMEOUT_MS,
   });
   if (!response.ok) {
     throw new Error(`Request failed (${response.status}) for ${url}`);
   }
-  const buffer = await response.arrayBuffer();
-  if (!buffer || !buffer.byteLength) {
+  const body = response.body;
+  if (!body || !body.length) {
     return null;
   }
-  return new Uint8Array(buffer);
+  return new Uint8Array(body);
+}
+
+async function requestBinaryWithMethods(url, headers, methods) {
+  const methodList = Array.isArray(methods) && methods.length ? methods : ["GET"];
+  let lastError = null;
+  for (let i = 0; i < methodList.length; i += 1) {
+    const method = String(methodList[i] || "GET").toUpperCase();
+    try {
+      const response = await requestBuffer(url, {
+        method,
+        headers,
+        timeoutMs: REQUEST_TIMEOUT_MS,
+      });
+      if (!response.ok) {
+        throw new Error(`Request failed (${response.status}) for ${url}`);
+      }
+      const body = response.body;
+      if (!body || !body.length) {
+        throw new Error(`Empty binary payload for ${url}`);
+      }
+      return new Uint8Array(body);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error(`Unable to fetch binary payload for ${url}`);
+}
+
+function hasFetchRuntime() {
+  return typeof fetch === "function";
+}
+
+function normalizeRequestHeaders(headers) {
+  const output = {};
+  if (!headers || typeof headers !== "object") {
+    return output;
+  }
+  Object.keys(headers).forEach((key) => {
+    if (!Object.prototype.hasOwnProperty.call(headers, key)) {
+      return;
+    }
+    const value = headers[key];
+    if (value == null) {
+      return;
+    }
+    output[String(key)] = String(value);
+  });
+  if (!output["Accept"] && !output["accept"]) {
+    output.Accept = "application/json";
+  }
+  return output;
+}
+
+function isRedirectStatus(statusCode) {
+  return statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308;
+}
+
+function bufferToUtf8Text(buffer) {
+  if (!buffer) {
+    return "";
+  }
+  try {
+    return Buffer.from(buffer).toString("utf8");
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function requestBuffer(url, options) {
+  const settings = options && typeof options === "object" ? options : {};
+  if (hasFetchRuntime()) {
+    try {
+      const response = await fetch(url, {
+        method: String(settings.method || "GET").toUpperCase(),
+        headers: normalizeRequestHeaders(settings.headers),
+      });
+      const bodyArrayBuffer = await response.arrayBuffer();
+      const body = Buffer.from(bodyArrayBuffer || new ArrayBuffer(0));
+      return {
+        ok: response.ok,
+        status: Number(response.status || 0),
+        body,
+      };
+    } catch (_error) {
+      // Fall back to the Node transport when fetch is unavailable or blocked.
+    }
+  }
+  return requestBufferViaNode(url, settings, 0);
+}
+
+function requestBufferViaNode(url, options, redirectCount) {
+  const settings = options && typeof options === "object" ? options : {};
+  const redirects = Number(redirectCount || 0);
+  return new Promise((resolve, reject) => {
+    let parsed = null;
+    try {
+      parsed = new URL(String(url || ""));
+    } catch (_error) {
+      reject(new Error(`Invalid URL ${url}`));
+      return;
+    }
+    const method = String(settings.method || "GET").toUpperCase();
+    const headers = normalizeRequestHeaders(settings.headers);
+    const transport = parsed.protocol === "http:" ? http : https;
+    const request = transport.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || undefined,
+        path: `${parsed.pathname || ""}${parsed.search || ""}`,
+        method,
+        headers,
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on("end", async () => {
+          const statusCode = Number(response.statusCode || 0);
+          const location = pickFirst(response.headers && response.headers.location);
+          if (isRedirectStatus(statusCode) && location) {
+            if (redirects >= MAX_HTTP_REDIRECTS) {
+              reject(new Error(`Too many redirects for ${url}`));
+              return;
+            }
+            const nextUrl = ensureAbsoluteUrl(parsed.toString(), location);
+            if (!nextUrl) {
+              reject(new Error(`Invalid redirect location for ${url}`));
+              return;
+            }
+            const nextMethod = statusCode === 303 ? "GET" : method;
+            try {
+              const redirected = await requestBufferViaNode(
+                nextUrl,
+                mergeObjects(settings, { method: nextMethod }),
+                redirects + 1
+              );
+              resolve(redirected);
+            } catch (redirectError) {
+              reject(redirectError);
+            }
+            return;
+          }
+          resolve({
+            ok: statusCode >= 200 && statusCode < 300,
+            status: statusCode,
+            body: Buffer.concat(chunks),
+          });
+        });
+      }
+    );
+    request.on("error", (error) => {
+      reject(error);
+    });
+    request.setTimeout(Number(settings.timeoutMs || REQUEST_TIMEOUT_MS), () => {
+      request.destroy(new Error(`Request timed out for ${url}`));
+    });
+    if (settings.body) {
+      request.write(settings.body);
+    }
+    request.end();
+  });
 }
 
 function bytesToPdfDataUrl(bytes) {
@@ -860,6 +1299,9 @@ function extractLikelyPdfUrlFromBytes(bytes) {
     return text;
   }
   const parsed = parseJsonSafe(text);
+  if (typeof parsed === "string" && /^https?:\/\/\S+/i.test(parsed.trim())) {
+    return parsed.trim();
+  }
   if (parsed && typeof parsed === "object") {
     const fromObject = extractLikelyUrlFromObject(parsed);
     if (fromObject) {
@@ -867,6 +1309,32 @@ function extractLikelyPdfUrlFromBytes(bytes) {
     }
   }
   return "";
+}
+
+function isLikelySignedPdfUrl(value) {
+  const text = pickFirst(value);
+  if (!text) {
+    return false;
+  }
+  let parsed = null;
+  try {
+    parsed = new URL(text);
+  } catch (_error) {
+    return false;
+  }
+  const query = String(parsed.search || "").toLowerCase();
+  if (!query) {
+    return false;
+  }
+  return (
+    query.includes("x-amz-signature=") ||
+    query.includes("x-amz-credential=") ||
+    query.includes("x-amz-security-token=") ||
+    query.includes("signature=") ||
+    query.includes("token=") ||
+    query.includes("policy=") ||
+    query.includes("expires=")
+  );
 }
 
 async function removeLogoFromPdfBytes(pdfBytes) {
@@ -914,36 +1382,46 @@ async function removeLogoFromPdfBytes(pdfBytes) {
   }
 }
 
-async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
+async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
-    return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+    return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
   }
   const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
   const pdfPaths = [
     {
-      path: `/api/v1/invoices/${encodedId}/generate`,
-      source: "api-v1-generate",
-    },
-    {
-      path: `/api/1.0/invoices/${encodedId}/generate`,
-      source: "api-1-generate",
+      path: `/invoices/${encodedId}/attachments/download`,
+      source: "web-attachments-download",
+      methods: ["GET"],
     },
     {
       path: `/api/v1/invoices/${encodedId}/attachments/download`,
       source: "api-v1-attachments-download",
+      methods: ["GET"],
     },
     {
       path: `/api/1.0/invoices/${encodedId}/attachments/download`,
       source: "api-1-attachments-download",
+      methods: ["GET"],
+    },
+    {
+      path: `/api/v1/invoices/${encodedId}/generate`,
+      source: "api-v1-generate",
+      methods: ["GET", "POST"],
+    },
+    {
+      path: `/api/1.0/invoices/${encodedId}/generate`,
+      source: "api-1-generate",
+      methods: ["GET", "POST"],
     },
   ];
   for (let i = 0; i < pdfPaths.length; i += 1) {
     const candidate = pdfPaths[i];
     try {
-      const pdfBytes = await requestBinary(
+      const pdfBytes = await requestBinaryWithMethods(
         ensureAbsoluteUrl(baseUrl, candidate.path),
-        requestHeaders
+        requestHeaders,
+        candidate.methods
       );
       if (looksLikePdfBytes(pdfBytes)) {
         const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
@@ -952,28 +1430,178 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId) {
           pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
           pdfBase64,
           pdfSource: `${candidate.source}-logo-masked`,
+          pdfUrl: "",
         };
       }
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
       if (redirectedPdfUrl) {
-        const redirectedBytes = await requestBinary(redirectedPdfUrl, {
-          Accept: "*/*",
-        });
-        if (looksLikePdfBytes(redirectedBytes)) {
-          const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
-          const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
-          return {
-            pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
-            pdfBase64: redirectedBase64,
-            pdfSource: `${candidate.source}-redirect-url-logo-masked`,
-          };
+        try {
+          const redirectedBytes = await requestBinaryWithMethods(
+            redirectedPdfUrl,
+            { Accept: "*/*" },
+            ["GET"]
+          );
+          if (looksLikePdfBytes(redirectedBytes)) {
+            const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+            const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
+            return {
+              pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+              pdfBase64: redirectedBase64,
+              pdfSource: `${candidate.source}-redirect-url-logo-masked`,
+              pdfUrl: "",
+            };
+          }
+        } catch (_redirectError) {
+          if (isLikelySignedPdfUrl(redirectedPdfUrl)) {
+            return {
+              pdfDataUrl: "",
+              pdfBase64: "",
+              pdfSource: `${candidate.source}-redirect-url-signed`,
+              pdfUrl: redirectedPdfUrl,
+            };
+          }
         }
       }
     } catch (_error) {
       // Ignore and continue with next candidate endpoint.
     }
   }
-  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "" };
+  const invoiceUrlPdf = await fetchPreviewPdfDataFromUrlCandidates(
+    baseUrl,
+    headers,
+    invoiceRecord
+  );
+  if (invoiceUrlPdf && (invoiceUrlPdf.pdfDataUrl || invoiceUrlPdf.pdfUrl)) {
+    return invoiceUrlPdf;
+  }
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
+}
+
+function collectPreviewPdfUrlCandidates(invoiceRecord) {
+  if (!invoiceRecord || typeof invoiceRecord !== "object") {
+    return [];
+  }
+  const urls = [];
+  const push = (value) => {
+    const text = pickFirst(value);
+    if (text) {
+      urls.push(text);
+    }
+  };
+  push(invoiceRecord.signedUrl);
+  push(invoiceRecord.downloadUrl);
+  push(invoiceRecord.fileUrl);
+  push(invoiceRecord.url);
+  push(invoiceRecord.href);
+  push(invoiceRecord.previewUrl);
+  push(invoiceRecord.attachmentUrl);
+  push(invoiceRecord.documentUrl);
+  push(invoiceRecord.pdfUrl);
+  if (invoiceRecord.file && typeof invoiceRecord.file === "object") {
+    push(invoiceRecord.file.signedUrl);
+    push(invoiceRecord.file.downloadUrl);
+    push(invoiceRecord.file.url);
+  }
+  const attachmentLists = [
+    invoiceRecord.attachments,
+    invoiceRecord.attachmentFiles,
+    invoiceRecord.files,
+    invoiceRecord.documents,
+  ];
+  attachmentLists.forEach((list) => {
+    if (!Array.isArray(list)) {
+      return;
+    }
+    list.forEach((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return;
+      }
+      push(entry.signedUrl || entry.downloadUrl || entry.fileUrl || entry.url || entry.href);
+      if (entry.file && typeof entry.file === "object") {
+        push(entry.file.signedUrl || entry.file.downloadUrl || entry.file.url);
+      }
+    });
+  });
+  return dedupeStrings(urls);
+}
+
+async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRecord) {
+  const requestHeaders = mergeObjects(headers, { Accept: "*/*" });
+  const candidates = collectPreviewPdfUrlCandidates(invoiceRecord);
+  let signedUrlFallback = "";
+  for (let i = 0; i < candidates.length; i += 1) {
+    const candidateUrl = ensureAbsoluteUrl(baseUrl, candidates[i]);
+    if (!candidateUrl) {
+      continue;
+    }
+    if (!signedUrlFallback && isLikelySignedPdfUrl(candidateUrl)) {
+      signedUrlFallback = candidateUrl;
+    }
+    try {
+      const pdfBytes = await requestBinaryWithMethods(candidateUrl, requestHeaders, ["GET"]);
+      if (looksLikePdfBytes(pdfBytes)) {
+        const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
+        const pdfBase64 = Buffer.from(logoMaskedPdfBytes).toString("base64");
+        return {
+          pdfDataUrl: `data:application/pdf;base64,${pdfBase64}`,
+          pdfBase64,
+          pdfSource: "invoice-url-logo-masked",
+          pdfUrl: "",
+        };
+      }
+      const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
+      if (redirectedPdfUrl) {
+        if (!signedUrlFallback && isLikelySignedPdfUrl(redirectedPdfUrl)) {
+          signedUrlFallback = redirectedPdfUrl;
+        }
+        try {
+          const redirectedBytes = await requestBinaryWithMethods(
+            redirectedPdfUrl,
+            { Accept: "*/*" },
+            ["GET"]
+          );
+          if (looksLikePdfBytes(redirectedBytes)) {
+            const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
+            const redirectedBase64 = Buffer.from(logoMaskedRedirectedBytes).toString("base64");
+            return {
+              pdfDataUrl: `data:application/pdf;base64,${redirectedBase64}`,
+              pdfBase64: redirectedBase64,
+              pdfSource: "invoice-url-redirect-logo-masked",
+              pdfUrl: "",
+            };
+          }
+        } catch (_redirectError) {
+          if (isLikelySignedPdfUrl(redirectedPdfUrl)) {
+            return {
+              pdfDataUrl: "",
+              pdfBase64: "",
+              pdfSource: "invoice-url-redirect-signed",
+              pdfUrl: redirectedPdfUrl,
+            };
+          }
+        }
+      }
+    } catch (_error) {
+      if (isLikelySignedPdfUrl(candidateUrl)) {
+        return {
+          pdfDataUrl: "",
+          pdfBase64: "",
+          pdfSource: "invoice-url-signed-fallback",
+          pdfUrl: candidateUrl,
+        };
+      }
+      // Try the next URL candidate.
+    }
+  }
+  if (signedUrlFallback) {
+    return {
+      pdfDataUrl: "",
+      pdfBase64: "",
+      pdfSource: "invoice-url-signed-fallback",
+      pdfUrl: signedUrlFallback,
+    };
+  }
+  return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
 }
 
 async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostics) {
@@ -1008,7 +1636,7 @@ async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostic
         const entry = queue[currentIndex];
         const invoiceId = encodeURIComponent(entry.invoiceId);
         try {
-          const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId);
+          const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId, entry.invoice);
           if (previewPdf && previewPdf.pdfBase64) {
             entry.invoice.previewPdfBase64 = previewPdf.pdfBase64;
             entry.invoice.previewPdfDataUrl = previewPdf.pdfDataUrl;
@@ -1191,8 +1819,11 @@ async function resolveInvoiceIdForPreview(
   headers,
   previewInvoiceId,
   previewInvoiceNumber,
-  previewSourceProjectId
+  previewSourceProjectId,
+  options
 ) {
+  const settings = options && typeof options === "object" ? options : {};
+  const skipCollectionFallback = settings.skipCollectionFallback === true;
   const explicitId = pickFirst(previewInvoiceId);
   const targetNumber = canonicalInvoiceNumber(
     previewInvoiceNumber || previewInvoiceId || ""
@@ -1220,7 +1851,7 @@ async function resolveInvoiceIdForPreview(
   } catch (_error) {
     rows = [];
   }
-  if (!rows.length) {
+  if (!rows.length && !skipCollectionFallback) {
     const fallbackLookup = await requestCollection(
       baseUrl,
       headers,
@@ -1271,6 +1902,46 @@ async function resolveInvoiceIdForPreview(
   return (scored[0] && scored[0].invoiceId) || explicitId;
 }
 
+async function requestInvoiceRecordForPreview(baseUrl, headers, previewInvoiceId) {
+  const encodedId = encodeURIComponent(String(previewInvoiceId || "").trim());
+  if (!encodedId) {
+    return {};
+  }
+  try {
+    const payload = await requestJson(
+      ensureAbsoluteUrl(baseUrl, `/api/v1/invoices/${encodedId}`),
+      headers
+    );
+    return (
+      extractRecordObject(payload || {}, [
+        "invoice",
+        "data",
+        "result",
+        "payload",
+        "response",
+      ]) || {}
+    );
+  } catch (_error) {
+    try {
+      const payload = await requestJson(
+        ensureAbsoluteUrl(baseUrl, `/api/1.0/invoices/${encodedId}`),
+        headers
+      );
+      return (
+        extractRecordObject(payload || {}, [
+          "invoice",
+          "data",
+          "result",
+          "payload",
+          "response",
+        ]) || {}
+      );
+    } catch (_fallbackError) {
+      return {};
+    }
+  }
+}
+
 async function requestCollection(baseUrl, headers, paths, preferredKeys) {
   const rows = [];
   const seen = new Set();
@@ -1303,6 +1974,9 @@ async function requestCollection(baseUrl, headers, paths, preferredKeys) {
         seen.add(key);
         rows.push(record);
       });
+      if (records.length > 0) {
+        break;
+      }
     } catch (error) {
       errors.push(String(error && error.message ? error.message : error));
     }
@@ -1608,7 +2282,10 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     .map((value) => deriveHubFromAddressText(value))
     .find(Boolean);
   const contractName = compactJoined(
-    customFieldValues.contractName.concat([projectInfo.contractName])
+    customFieldValues.contractName.concat([
+      pickFirst(record.sowNumber || record.sowNo || record.contractNumber || ""),
+      projectInfo.contractName,
+    ])
   );
   const hub = compactJoined(
     customFieldValues.hub.concat([derivedHubFromAddress], [projectInfo.hub])
@@ -1623,9 +2300,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
       (record.submittedBy && record.submittedBy.name) ||
       (record.submittedByUser && record.submittedByUser.name)
   );
-  const createdByFieldName = isLikelyDisplayName(customFieldValues.createdBy[0])
-    ? pickFirst(customFieldValues.createdBy[0])
-    : "";
+  const createdByFieldRaw = pickFirst(customFieldValues.createdBy[0]);
+  const createdByFieldName = isLikelyDisplayName(createdByFieldRaw) ? createdByFieldRaw : "";
+  const createdByFieldEmail = normalizeEmail(createdByFieldRaw);
   const createdByName =
     pickFirst(
       (isLikelyDisplayName(record.createdByName) ? record.createdByName : "") ||
@@ -1660,6 +2337,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ownerName: pickFirst(
       createdByName ||
         createdByFieldName ||
+        createdByFieldRaw ||
         submittedByName ||
         record.projectManagerName ||
         record.expertAdvisorName ||
@@ -1672,6 +2350,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ) || projectInfo.ownerName || "Unassigned",
     accountName:
       pickPreferredAccountName([
+        (customFieldValues.accountName && customFieldValues.accountName[0]) || "",
         record.accountName,
         record.account && (record.account.accountName || record.account.name),
         record.customer && (record.customer.accountName || record.customer.companyName || record.customer.name),
@@ -1700,6 +2379,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     ),
     createdByEmail: normalizeEmail(
       pickFirst(
+        createdByFieldEmail ||
         extractUserEmailValue(record.createdBy) ||
           extractUserEmailValue(record.createdByUser) ||
           extractUserEmailValue(record.submittedBy) ||
@@ -1730,7 +2410,9 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     hub,
     program,
     quantityHours,
-    associatedEmails: dedupeStrings(associatedEmails.concat(projectEmails)),
+    associatedEmails: dedupeStrings(
+      associatedEmails.concat(createdByFieldEmail ? [createdByFieldEmail] : [], projectEmails)
+    ),
     associatedUserIds: dedupeStrings(associatedUserIds.concat(projectUserIds)),
     sourceProjectId: projectInfo.id || "",
     sourceProjectName: projectInfo.name || "",
@@ -1738,6 +2420,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
 }
 
 function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
+  const previewAliasValues = extractCustomFieldAliases(invoiceRecord || {});
   const previewFieldSources = [
     invoiceRecord && invoiceRecord.fields,
     invoiceRecord && invoiceRecord.customFields,
@@ -1788,6 +2471,7 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
     issueDate: normalizeDateValue(invoiceRecord && (invoiceRecord.dateOfIssue || invoiceRecord.invoiceDate || invoiceRecord.createdAt)),
     dueDate: normalizeDateValue(invoiceRecord && invoiceRecord.dueDate),
     accountName: pickFirst(
+      (previewAliasValues.accountName && previewAliasValues.accountName[0]) ||
       invoiceRecord &&
         (invoiceRecord.accountName ||
           invoiceRecord.companyName ||
@@ -1801,7 +2485,10 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
           (invoiceRecord.company && (invoiceRecord.company.workspaceName || invoiceRecord.company.companyName)))
     ),
     billToName:
-      pickFirst(invoiceRecord && (invoiceRecord.submittedByName || invoiceRecord.createdByName)) ||
+      pickFirst(
+        (previewAliasValues.createdBy && previewAliasValues.createdBy[0]) ||
+          (invoiceRecord && (invoiceRecord.submittedByName || invoiceRecord.createdByName))
+      ) ||
       fullName(submitter),
     billToEmail: normalizeEmail(
       pickFirst(submitter && (submitter.email || submitter.emailId || submitter.userEmail))
@@ -2234,7 +2921,7 @@ function collectRoleTokens(value, target, depth) {
   });
 }
 
-function isAdminToken(text) {
+function hasFullInvoiceAccessToken(text) {
   const value = String(text || "")
     .toLowerCase()
     .replace(/[_-]+/g, " ");
@@ -2243,9 +2930,14 @@ function isAdminToken(text) {
   }
   return (
     /(^|\b)account\s*admin(istrator)?(\b|$)/.test(value) ||
+    /(^|\b)finance(\b|$)/.test(value) ||
     value === "admin" ||
     value === "administrator"
   );
+}
+
+function isAdminToken(text) {
+  return hasFullInvoiceAccessToken(text);
 }
 
 function collectPermissionTokens(value, target, depth) {
@@ -2285,7 +2977,7 @@ function extractPermissionFromAny(record) {
   const tokens = [];
   collectPermissionTokens(record, tokens, 0);
   const deduped = dedupeStrings(tokens);
-  const adminToken = deduped.find((token) => isAdminToken(token));
+  const adminToken = deduped.find((token) => hasFullInvoiceAccessToken(token));
   if (adminToken) {
     return adminToken;
   }
@@ -2352,7 +3044,9 @@ function deriveViewerAccess(request, context) {
       viewerContext.userRole
   );
 
-  const isAdmin = isAdminToken(permission);
+  const isAdmin =
+    hasFullInvoiceAccessToken(permission) ||
+    hasFullInvoiceAccessToken(roleLabel);
 
   return {
     id,
@@ -2420,10 +3114,13 @@ function resolveViewerFromMembers(baseViewer, members, request) {
   const permission = pickFirst(
     matched.permission ||
       viewer.permission ||
-      (isAdminToken(matched.roleLabel) ? matched.roleLabel : "")
+      (hasFullInvoiceAccessToken(matched.roleLabel) ? matched.roleLabel : "")
   );
   const roleLabel = pickFirst(matched.roleLabel || viewer.roleLabel);
-  const isAdmin = isAdminToken(permission) || viewer.isAdmin === true;
+  const isAdmin =
+    hasFullInvoiceAccessToken(permission) ||
+    hasFullInvoiceAccessToken(roleLabel) ||
+    viewer.isAdmin === true;
   return {
     id: pickFirst(matched.id || viewer.id),
     email: normalizeEmail(pickFirst(matched.email || viewer.email)),
@@ -2436,6 +3133,7 @@ function resolveViewerFromMembers(baseViewer, members, request) {
 
 module.exports = {
   syncInvoicesFromSource: async (request = {}, context = {}) => {
+    request = normalizeIncomingRequest(request);
     const installation = context.installation || {};
     const iParams = installation.iparams || {};
     const secureParams = installation.secureParams || {};
@@ -2487,6 +3185,15 @@ module.exports = {
       iParams.apiBaseUrl,
       ROCKETLANE_API_BASE_URL,
     ]);
+    const workspaceApiBaseCandidates = dedupeStrings(
+      workspaceCandidatesForFetch
+        .map((candidate) => pickFirst(candidate).replace(/\/+$/, ""))
+        .filter(Boolean)
+    );
+    const previewApiBaseCandidates = dedupeStrings([
+      ...apiBaseCandidates,
+      ...workspaceApiBaseCandidates,
+    ]);
     const normalizedSearchQuery = String(request.searchQuery || "").trim();
 
     if (!apiBaseCandidates.length || !apiToken) {
@@ -2507,6 +3214,7 @@ module.exports = {
 
     const diagnostics = {
       workspaceCandidates: workspaceCandidatesForFetch,
+      previewApiBaseCandidates,
       projectErrors: [],
       invoiceErrors: [],
       memberErrors: [],
@@ -2530,21 +3238,147 @@ module.exports = {
         request.invoiceNumber ||
         (request.preview && request.preview.invoiceNumber)
     );
+    const requestMode = String(request.requestMode || request.mode || "").toLowerCase();
+    const disablePreviewMode = request.disablePreviewMode === true;
+    const isPreviewPdfRequest = requestMode === "preview-pdf";
     const isPreviewRequest =
-      String(request.requestMode || request.mode || "").toLowerCase() === "preview" ||
-      Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested);
+      !disablePreviewMode &&
+      (requestMode === "preview" ||
+        isPreviewPdfRequest ||
+        Boolean(previewInvoiceIdRequested || previewInvoiceNumberRequested));
+    const prefetchInvoiceIdRequested = pickFirst(
+      request.prefetchInvoiceId || previewInvoiceIdRequested || request.invoiceId
+    );
+    const prefetchInvoiceNumberRequested = canonicalInvoiceNumber(
+      pickFirst(
+        request.prefetchInvoiceNumber ||
+          previewInvoiceNumberRequested ||
+          request.invoiceNumberForPreview ||
+          request.invoiceNumber
+      )
+    );
+    const isTargetedPreviewPrefetchRequest =
+      !isPreviewRequest &&
+      request.prefetchPreviewPdfs === true &&
+      Boolean(prefetchInvoiceIdRequested || prefetchInvoiceNumberRequested);
+    const isAnyPreviewPrefetchRequest = request.prefetchPreviewPdfs === true;
     diagnostics.previewRequest = {
       isPreviewRequest,
+      disablePreviewMode,
       previewInvoiceIdRequested,
       previewInvoiceNumberRequested,
+      prefetchInvoiceIdRequested,
+      prefetchInvoiceNumberRequested,
+      isTargetedPreviewPrefetchRequest,
       requestMode: String(request.requestMode || request.mode || ""),
     };
     const viewer = deriveViewerAccess(request, context);
     let resolvedViewer = viewer;
 
     if (isPreviewRequest) {
-      for (let i = 0; i < apiBaseCandidates.length; i += 1) {
-        const baseUrl = apiBaseCandidates[i];
+      if (isPreviewPdfRequest) {
+        const previewPdfAttempts = [];
+        for (let i = 0; i < previewApiBaseCandidates.length; i += 1) {
+          const baseUrl = previewApiBaseCandidates[i];
+          try {
+            const resolvedInvoiceIdFast = await resolveInvoiceIdForPreview(
+              baseUrl,
+              headers,
+              previewInvoiceIdRequested,
+              previewInvoiceNumberRequested,
+              request.previewSourceProjectId,
+              { skipCollectionFallback: true }
+            );
+            let resolvedInvoiceId = pickFirst(resolvedInvoiceIdFast);
+            if (!resolvedInvoiceId && previewInvoiceNumberRequested) {
+              resolvedInvoiceId = pickFirst(
+                await resolveInvoiceIdForPreview(
+                  baseUrl,
+                  headers,
+                  previewInvoiceIdRequested,
+                  previewInvoiceNumberRequested,
+                  request.previewSourceProjectId
+                )
+              );
+            }
+            const previewInvoiceIds = dedupeStrings([
+              previewInvoiceIdRequested,
+              pickFirst(resolvedInvoiceId),
+            ]).filter(Boolean);
+            if (!previewInvoiceIds.length) {
+              throw new Error("Invoice ID could not be resolved for preview PDF.");
+            }
+            for (let candidateIdx = 0; candidateIdx < previewInvoiceIds.length; candidateIdx += 1) {
+              const previewInvoiceId = pickFirst(previewInvoiceIds[candidateIdx]);
+              if (!previewInvoiceId) {
+                continue;
+              }
+              const invoiceRecord = await requestInvoiceRecordForPreview(
+                baseUrl,
+                headers,
+                previewInvoiceId
+              );
+              const previewPdf = await fetchPreviewPdfData(
+                baseUrl,
+                headers,
+                encodeURIComponent(previewInvoiceId),
+                invoiceRecord
+              );
+              if (previewPdf && (previewPdf.pdfDataUrl || previewPdf.pdfUrl)) {
+                previewPdfAttempts.push({
+                  baseUrl,
+                  invoiceId: previewInvoiceId,
+                  outcome: "success",
+                  source: previewPdf.pdfSource || "",
+                });
+                return {
+                  ok: true,
+                  previewPdf: {
+                    invoiceId: previewInvoiceId,
+                    pdfDataUrl: previewPdf.pdfDataUrl,
+                    pdfBase64: previewPdf.pdfBase64 || "",
+                    pdfSource: previewPdf.pdfSource || "",
+                    pdfUrl: previewPdf.pdfUrl || "",
+                  },
+                  viewer,
+                  diagnostics: mergeObjects(diagnostics, {
+                    apiBaseUsed: baseUrl,
+                    previewInvoiceResolvedId: previewInvoiceId,
+                    previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                    previewPdfRequest: true,
+                    previewPdfAttempts,
+                  }),
+                };
+              }
+              previewPdfAttempts.push({
+                baseUrl,
+                invoiceId: previewInvoiceId,
+                outcome: "no-pdf",
+              });
+            }
+          } catch (error) {
+            previewPdfAttempts.push({
+              baseUrl,
+              invoiceId: "",
+              outcome: "error",
+              error: String(error && error.message ? error.message : error),
+            });
+            diagnostics.invoiceErrors.push(
+              String(error && error.message ? error.message : error)
+            );
+          }
+        }
+        return {
+          ok: false,
+          error: "Unable to load invoice preview PDF.",
+          previewPdf: null,
+          viewer,
+          diagnostics: mergeObjects(diagnostics, { previewPdfAttempts }),
+        };
+      }
+      let previewFallbackResponse = null;
+      for (let i = 0; i < previewApiBaseCandidates.length; i += 1) {
+        const baseUrl = previewApiBaseCandidates[i];
         try {
           const resolvedInvoiceId = await resolveInvoiceIdForPreview(
             baseUrl,
@@ -2554,8 +3388,8 @@ module.exports = {
             request.previewSourceProjectId
           );
           const previewInvoiceIds = dedupeStrings([
-            previewInvoiceIdRequested,
             pickFirst(resolvedInvoiceId),
+            previewInvoiceIdRequested,
           ])
             .map((value) => encodeURIComponent(String(value || "").trim()))
             .filter(Boolean);
@@ -2607,7 +3441,6 @@ module.exports = {
               } catch (_error) {
                 payments = [];
               }
-              const previewPdf = await fetchPreviewPdfData(baseUrl, headers, previewInvoiceId);
               const invoiceRecord = extractRecordObject(invoicePayload || {}, [
                 "invoice",
                 "data",
@@ -2615,18 +3448,23 @@ module.exports = {
                 "payload",
                 "response",
               ]) || {};
+              const previewPdf = await fetchPreviewPdfData(
+                baseUrl,
+                headers,
+                previewInvoiceId,
+                invoiceRecord
+              );
               const preview = normalizeInvoicePreview(invoiceRecord, lineItems, payments);
               if (previewPdf.pdfDataUrl) {
                 preview.pdfDataUrl = previewPdf.pdfDataUrl;
                 preview.pdfBase64 = previewPdf.pdfBase64 || "";
                 preview.pdfSource = previewPdf.pdfSource;
               }
-              if (
-                preview.pdfDataUrl ||
-                lineItems.length ||
-                payments.length ||
-                Object.keys(invoiceRecord).length
-              ) {
+              if (previewPdf.pdfUrl) {
+                preview.pdfUrl = previewPdf.pdfUrl;
+                preview.pdfSource = previewPdf.pdfSource || preview.pdfSource || "";
+              }
+              if (preview.pdfDataUrl || preview.pdfUrl) {
                 return {
                   ok: true,
                   preview,
@@ -2635,6 +3473,22 @@ module.exports = {
                     apiBaseUsed: baseUrl,
                     previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
                     previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                  }),
+                };
+              }
+              if (
+                !previewFallbackResponse &&
+                (lineItems.length || payments.length || Object.keys(invoiceRecord).length)
+              ) {
+                previewFallbackResponse = {
+                  ok: true,
+                  preview,
+                  viewer,
+                  diagnostics: mergeObjects(diagnostics, {
+                    apiBaseUsed: baseUrl,
+                    previewInvoiceResolvedId: decodeURIComponent(previewInvoiceId),
+                    previewInvoiceResolvedFrom: String(resolvedInvoiceId || ""),
+                    previewPdfUnavailable: true,
                   }),
                 };
               }
@@ -2657,6 +3511,9 @@ module.exports = {
             String(error && error.message ? error.message : error)
           );
         }
+      }
+      if (previewFallbackResponse) {
+        return previewFallbackResponse;
       }
       return {
         ok: false,
@@ -2700,7 +3557,7 @@ module.exports = {
       const globalInvoices = allInvoicesResult.rows;
 
       const collectedInvoices = [];
-      const lineEnrichmentTasks = [];
+      const lineEnrichmentQueue = [];
       for (let idx = 0; idx < globalInvoices.length; idx += 1) {
         const row = globalInvoices[idx];
         const project = resolveProjectForInvoice(row, projectLookup);
@@ -2710,71 +3567,117 @@ module.exports = {
           request.accountName || iParams.accountName || ""
         );
         if (normalized) {
+          if (isTargetedPreviewPrefetchRequest) {
+            const normalizedInvoiceId = pickFirst(normalized.invoiceId || normalized.id);
+            const normalizedInvoiceNumber = canonicalInvoiceNumber(
+              pickFirst(normalized.invoiceNumber || buildInvoiceDisplayNumber(row))
+            );
+            const matchedById =
+              prefetchInvoiceIdRequested &&
+              normalizedInvoiceId &&
+              normalizedInvoiceId === prefetchInvoiceIdRequested;
+            const matchedByNumber =
+              prefetchInvoiceNumberRequested &&
+              normalizedInvoiceNumber &&
+              normalizedInvoiceNumber === prefetchInvoiceNumberRequested;
+            if (!matchedById && !matchedByNumber) {
+              continue;
+            }
+          }
           const invoiceId = encodeURIComponent(
             pickFirst(normalized.invoiceId || normalized.id || row.invoiceId || row.id || row._id)
           );
           if (invoiceId) {
             const targetInvoice = normalized;
-            lineEnrichmentTasks.push(
-              requestCollection(
-                baseUrl,
-                headers,
-                [`/api/1.0/invoices/${invoiceId}/lines`],
-                ["data", "lines", "items", "results"]
-              )
-                .then((lineFetch) => {
+            const shouldEnrichFromLines =
+              !isAnyPreviewPrefetchRequest &&
+              (Number(targetInvoice.quantityHours || 0) <= 0 ||
+                !pickFirst(targetInvoice.hub) ||
+                !pickFirst(targetInvoice.program));
+            if (shouldEnrichFromLines) {
+              lineEnrichmentQueue.push({
+                invoiceId,
+                targetInvoice,
+              });
+            }
+          }
+          collectedInvoices.push(normalized);
+        }
+      }
+      if (lineEnrichmentQueue.length) {
+        const maxLineEnrichmentConcurrency = 4;
+        let lineEnrichmentIndex = 0;
+        const workers = Array.from(
+          { length: Math.min(maxLineEnrichmentConcurrency, lineEnrichmentQueue.length) },
+          () =>
+            (async () => {
+              while (lineEnrichmentIndex < lineEnrichmentQueue.length) {
+                const currentIndex = lineEnrichmentIndex;
+                lineEnrichmentIndex += 1;
+                const entry = lineEnrichmentQueue[currentIndex];
+                try {
+                  const lineFetch = await requestCollection(
+                    baseUrl,
+                    headers,
+                    [`/api/1.0/invoices/${entry.invoiceId}/lines`],
+                    ["data", "lines", "items", "results"]
+                  );
                   diagnostics.invoiceErrors.push(...lineFetch.errors);
                   const fetchedQuantity = sumLineItemQuantity(lineFetch.rows);
                   if (fetchedQuantity > 0) {
-                    targetInvoice.quantityHours = fetchedQuantity;
+                    entry.targetInvoice.quantityHours = fetchedQuantity;
                   }
                   const extractedLineValues = extractHubProgramFromLineItems(lineFetch.rows);
                   if (Array.isArray(extractedLineValues.hub) && extractedLineValues.hub.length) {
-                    targetInvoice.hub = compactJoined(extractedLineValues.hub);
+                    entry.targetInvoice.hub = compactJoined(extractedLineValues.hub);
                   }
                   if (
                     Array.isArray(extractedLineValues.program) &&
                     extractedLineValues.program.length
                   ) {
-                    targetInvoice.program = compactJoined(extractedLineValues.program);
+                    entry.targetInvoice.program = compactJoined(extractedLineValues.program);
                   }
-                })
-                .catch((lineError) => {
+                } catch (lineError) {
                   diagnostics.invoiceErrors.push(
                     String(lineError && lineError.message ? lineError.message : lineError)
                   );
-                })
-            );
-          }
-          collectedInvoices.push(normalized);
-        }
-      }
-      if (lineEnrichmentTasks.length) {
-        await Promise.all(lineEnrichmentTasks);
+                }
+              }
+            })()
+        );
+        await Promise.all(workers);
       }
 
-      const membersResult = await requestCollection(
-        baseUrl,
-        headers,
-        ["/api/1.0/users?includeFields=permission,role,company", "/api/1.0/users?includeFields=permission", "/api/1.0/users"],
-        ["users", "members", "teamMembers", "data", "results", "items"]
-      );
-      diagnostics.memberErrors.push(...membersResult.errors);
-      const normalizedMembers = membersResult.rows.map(normalizeMember).filter(Boolean);
-      const viewerFromApi = await requestCurrentViewer(baseUrl, headers);
+      let normalizedMembers = [];
+      let viewerFromApi = null;
+      if (!isTargetedPreviewPrefetchRequest) {
+        const membersResult = await requestCollection(
+          baseUrl,
+          headers,
+          ["/api/1.0/users?includeFields=permission,role,company", "/api/1.0/users?includeFields=permission", "/api/1.0/users"],
+          ["users", "members", "teamMembers", "data", "results", "items"]
+        );
+        diagnostics.memberErrors.push(...membersResult.errors);
+        normalizedMembers = membersResult.rows.map(normalizeMember).filter(Boolean);
+        viewerFromApi = await requestCurrentViewer(baseUrl, headers);
+      }
       const membersWithViewer = viewerFromApi
         ? [viewerFromApi].concat(normalizedMembers)
         : normalizedMembers;
       const memberLookups = buildMemberLookups(membersWithViewer);
-      const enrichedInvoices = collectedInvoices.map((invoice) =>
-        enrichInvoiceDisplayData(invoice, memberLookups, projectLookup)
-      );
+      const enrichedInvoices = isTargetedPreviewPrefetchRequest
+        ? collectedInvoices
+        : collectedInvoices.map((invoice) =>
+            enrichInvoiceDisplayData(invoice, memberLookups, projectLookup)
+          );
       const viewerSeed = mergeObjects(viewer, viewerFromApi || {});
-      const resolvedLoopViewer = resolveViewerFromMembers(
-        viewerSeed,
-        membersWithViewer,
-        request
-      );
+      const resolvedLoopViewer = isTargetedPreviewPrefetchRequest
+        ? viewerSeed
+        : resolveViewerFromMembers(
+            viewerSeed,
+            membersWithViewer,
+            request
+          );
 
       if (allProjects.length || globalInvoices.length || normalizedMembers.length) {
         diagnostics.workspaceUsed = workspaceCandidatesForFetch[0] || "";
@@ -2806,12 +3709,51 @@ module.exports = {
 
     resolvedViewer = resolveViewerFromMembers(resolvedViewer, members, request);
 
-    const shouldPrefetchPreviewPdfs = request.searchOnly !== true;
+    const shouldPrefetchPreviewPdfs =
+      request.searchOnly !== true && request.prefetchPreviewPdfs === true;
     if (shouldPrefetchPreviewPdfs) {
+      const targetPreviewInvoiceId = pickFirst(
+        request.previewInvoiceId ||
+          request.invoiceId ||
+          request.prefetchInvoiceId ||
+          (request.preview && request.preview.invoiceId)
+      );
+      const targetPreviewInvoiceNumber = canonicalInvoiceNumber(
+        pickFirst(
+          request.previewInvoiceNumber ||
+            request.invoiceNumberForPreview ||
+            request.invoiceNumber ||
+            request.prefetchInvoiceNumber ||
+            (request.preview && request.preview.invoiceNumber)
+        )
+      );
+      let invoicesToPrefetch = dedupedInvoices;
+      if (targetPreviewInvoiceId || targetPreviewInvoiceNumber) {
+        const targeted = dedupedInvoices.filter((invoice) => {
+          const invoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
+          const invoiceNumber = canonicalInvoiceNumber(
+            pickFirst(invoice && invoice.invoiceNumber)
+          );
+          if (targetPreviewInvoiceId && invoiceId && invoiceId === targetPreviewInvoiceId) {
+            return true;
+          }
+          if (
+            targetPreviewInvoiceNumber &&
+            invoiceNumber &&
+            invoiceNumber === targetPreviewInvoiceNumber
+          ) {
+            return true;
+          }
+          return false;
+        });
+        if (targeted.length) {
+          invoicesToPrefetch = targeted;
+        }
+      }
       await attachPreviewPdfToInvoices(
-        diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
+        previewApiBaseCandidates[0] || diagnostics.apiBaseUsed || apiBaseCandidates[0] || "",
         headers,
-        dedupedInvoices,
+        invoicesToPrefetch,
         diagnostics
       );
     }

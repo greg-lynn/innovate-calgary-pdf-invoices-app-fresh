@@ -12,6 +12,11 @@ const EMBEDDED_ROCKETLANE_API_KEY_WORKSPACE = "innovate-calgary.rocketlane.com";
 const ROCKETLANE_API_BASE_URL = "https://api.rocketlane.com";
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_HTTP_REDIRECTS = 5;
+const PREVIEW_PDF_REQUEST_TIMEOUT_MS = 9000;
+const PREVIEW_PDF_MAX_ATTEMPTS = 3;
+const PREVIEW_PDF_RETRY_BASE_DELAY_MS = 250;
+const PREVIEW_PDF_CACHE_TTL_MS = 5 * 60 * 1000;
+const PREVIEW_PDF_CACHE_MAX_ENTRIES = 300;
 const FIELD_ALIAS_GROUPS = {
   contractName: [
     "contract name",
@@ -34,8 +39,12 @@ const FIELD_ALIAS_GROUPS = {
     "client name",
   ],
   createdBy: ["created by", "createdby", "creator", "submitted by", "expert advisor"],
+  expertAdvisor: ["expert advisor", "assigned expert advisor", "project manager"],
   quantityHours: ["quantity", "qty", "hour", "hours"],
 };
+
+const previewPdfCache = new Map();
+const previewPdfInFlight = new Map();
 
 const HUB_FALLBACK_LABEL_ALIASES = ["ea address", "address", "hub location", "location"];
 const PROGRAM_FALLBACK_LABEL_ALIASES = [
@@ -270,6 +279,12 @@ function normalizeIncomingRequest(request) {
   const workspaceCandidates = Array.isArray(source.workspaceCandidates)
     ? source.workspaceCandidates
     : pickFirstArrayFromAny(source, ["workspaceCandidates"]);
+  const prefetchInvoiceIdsRaw = Array.isArray(source.prefetchInvoiceIds)
+    ? source.prefetchInvoiceIds
+    : pickFirstArrayFromAny(source, ["prefetchInvoiceIds"]);
+  const prefetchInvoiceNumbersRaw = Array.isArray(source.prefetchInvoiceNumbers)
+    ? source.prefetchInvoiceNumbers
+    : pickFirstArrayFromAny(source, ["prefetchInvoiceNumbers"]);
   return mergeObjects(source, {
     requestMode: pickFirst(
       source.requestMode ||
@@ -314,6 +329,16 @@ function normalizeIncomingRequest(request) {
     disablePreviewMode:
       source.disablePreviewMode === true ||
       parseBooleanFromAny(source, ["disablePreviewMode"], false),
+    prefetchInvoiceIds: dedupeStrings(
+      (Array.isArray(prefetchInvoiceIdsRaw) ? prefetchInvoiceIdsRaw : [])
+        .map((value) => pickFirst(value))
+        .filter(Boolean)
+    ),
+    prefetchInvoiceNumbers: dedupeStrings(
+      (Array.isArray(prefetchInvoiceNumbersRaw) ? prefetchInvoiceNumbersRaw : [])
+        .map((value) => canonicalInvoiceNumber(value))
+        .filter(Boolean)
+    ),
     viewerContext,
     preview: mergeObjects(previewObject, {
       invoiceId: pickFirst(previewObject.invoiceId || invoiceId),
@@ -479,6 +504,7 @@ function extractNamedCustomFieldValues(fields) {
     program: [],
     accountName: [],
     createdBy: [],
+    expertAdvisor: [],
     quantityHours: [],
   };
   const entries = extractFieldDisplayEntries(fields);
@@ -513,6 +539,7 @@ function extractNamedCustomFieldValues(fields) {
   output.program = dedupeStrings(output.program);
   output.accountName = dedupeStrings(output.accountName);
   output.createdBy = dedupeStrings(output.createdBy);
+  output.expertAdvisor = dedupeStrings(output.expertAdvisor);
   output.quantityHours = dedupeStrings(output.quantityHours);
   return output;
 }
@@ -713,6 +740,7 @@ function extractCustomFieldAliases(record) {
     program: [],
     accountName: [],
     createdBy: [],
+    expertAdvisor: [],
     quantityHours: [],
   };
   collectCustomFieldSources(record).forEach((source) => {
@@ -722,6 +750,7 @@ function extractCustomFieldAliases(record) {
     merged.program.push(...(extracted.program || []));
     merged.accountName.push(...(extracted.accountName || []));
     merged.createdBy.push(...(extracted.createdBy || []));
+    merged.expertAdvisor.push(...(extracted.expertAdvisor || []));
     merged.quantityHours.push(...(extracted.quantityHours || []));
   });
   merged.contractName = dedupeStrings(merged.contractName);
@@ -729,6 +758,7 @@ function extractCustomFieldAliases(record) {
   merged.program = dedupeStrings(merged.program);
   merged.accountName = dedupeStrings(merged.accountName);
   merged.createdBy = dedupeStrings(merged.createdBy);
+  merged.expertAdvisor = dedupeStrings(merged.expertAdvisor);
   merged.quantityHours = dedupeStrings(merged.quantityHours);
   return merged;
 }
@@ -878,6 +908,11 @@ function invoiceMatchesQuery(invoice, query) {
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
+}
+
+function toEmailOrEmpty(value) {
+  const email = normalizeEmail(value);
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : "";
 }
 
 function mergeObjects(a, b) {
@@ -1039,13 +1074,14 @@ async function requestBinary(url, headers) {
 async function requestBinaryWithMethods(url, headers, methods) {
   const methodList = Array.isArray(methods) && methods.length ? methods : ["GET"];
   let lastError = null;
+  const timeoutMs = PREVIEW_PDF_REQUEST_TIMEOUT_MS;
   for (let i = 0; i < methodList.length; i += 1) {
     const method = String(methodList[i] || "GET").toUpperCase();
     try {
       const response = await requestBuffer(url, {
         method,
         headers,
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs,
       });
       if (!response.ok) {
         throw new Error(`Request failed (${response.status}) for ${url}`);
@@ -1060,6 +1096,48 @@ async function requestBinaryWithMethods(url, headers, methods) {
     }
   }
   throw lastError || new Error(`Unable to fetch binary payload for ${url}`);
+}
+
+async function waitMs(delayMs) {
+  const duration = Number(delayMs || 0);
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, duration));
+}
+
+function isRetriableError(error) {
+  const message = String(error && error.message ? error.message : error || "").toLowerCase();
+  if (!message) {
+    return false;
+  }
+  return (
+    message.includes("timed out") ||
+    message.includes("econnreset") ||
+    message.includes("socket hang up") ||
+    message.includes("429") ||
+    message.includes("request failed (5")
+  );
+}
+
+async function withRetry(executor, options) {
+  const settings = options && typeof options === "object" ? options : {};
+  const attempts = Math.max(1, Number(settings.attempts || 1));
+  const baseDelayMs = Math.max(0, Number(settings.baseDelayMs || 0));
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await executor(attempt);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts || !isRetriableError(error)) {
+        throw error;
+      }
+      const delay = baseDelayMs * Math.pow(2, attempt - 1);
+      await waitMs(delay);
+    }
+  }
+  throw lastError || new Error("Retry failed");
 }
 
 function hasFetchRuntime() {
@@ -1382,7 +1460,49 @@ async function removeLogoFromPdfBytes(pdfBytes) {
   }
 }
 
-async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
+function createPreviewPdfCacheKey(baseUrl, previewInvoiceId) {
+  return `${pickFirst(baseUrl).replace(/\/+$/, "")}|${pickFirst(previewInvoiceId)}`;
+}
+
+function readPreviewPdfCache(cacheKey) {
+  if (!cacheKey || !previewPdfCache.has(cacheKey)) {
+    return null;
+  }
+  const entry = previewPdfCache.get(cacheKey);
+  const now = Date.now();
+  if (!entry || now - Number(entry.createdAt || 0) > PREVIEW_PDF_CACHE_TTL_MS) {
+    previewPdfCache.delete(cacheKey);
+    return null;
+  }
+  return entry.value && typeof entry.value === "object"
+    ? Object.assign({}, entry.value)
+    : null;
+}
+
+function writePreviewPdfCache(cacheKey, value) {
+  if (!cacheKey || !value || typeof value !== "object") {
+    return;
+  }
+  previewPdfCache.set(cacheKey, {
+    createdAt: Date.now(),
+    value: Object.assign({}, value),
+  });
+  if (previewPdfCache.size <= PREVIEW_PDF_CACHE_MAX_ENTRIES) {
+    return;
+  }
+  const entries = Array.from(previewPdfCache.entries()).sort(
+    (a, b) => Number((a[1] && a[1].createdAt) || 0) - Number((b[1] && b[1].createdAt) || 0)
+  );
+  while (entries.length > PREVIEW_PDF_CACHE_MAX_ENTRIES) {
+    const oldest = entries.shift();
+    if (!oldest) {
+      break;
+    }
+    previewPdfCache.delete(oldest[0]);
+  }
+}
+
+async function fetchPreviewPdfDataUncached(baseUrl, headers, previewInvoiceId, invoiceRecord) {
   const encodedId = String(previewInvoiceId || "").trim();
   if (!encodedId) {
     return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
@@ -1418,10 +1538,17 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
   for (let i = 0; i < pdfPaths.length; i += 1) {
     const candidate = pdfPaths[i];
     try {
-      const pdfBytes = await requestBinaryWithMethods(
-        ensureAbsoluteUrl(baseUrl, candidate.path),
-        requestHeaders,
-        candidate.methods
+      const pdfBytes = await withRetry(
+        () =>
+          requestBinaryWithMethods(
+            ensureAbsoluteUrl(baseUrl, candidate.path),
+            requestHeaders,
+            candidate.methods
+          ),
+        {
+          attempts: PREVIEW_PDF_MAX_ATTEMPTS,
+          baseDelayMs: PREVIEW_PDF_RETRY_BASE_DELAY_MS,
+        }
       );
       if (looksLikePdfBytes(pdfBytes)) {
         const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
@@ -1436,10 +1563,13 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
       const redirectedPdfUrl = extractLikelyPdfUrlFromBytes(pdfBytes);
       if (redirectedPdfUrl) {
         try {
-          const redirectedBytes = await requestBinaryWithMethods(
-            redirectedPdfUrl,
-            { Accept: "*/*" },
-            ["GET"]
+          const redirectedBytes = await withRetry(
+            () =>
+              requestBinaryWithMethods(redirectedPdfUrl, { Accept: "*/*" }, ["GET"]),
+            {
+              attempts: PREVIEW_PDF_MAX_ATTEMPTS,
+              baseDelayMs: PREVIEW_PDF_RETRY_BASE_DELAY_MS,
+            }
           );
           if (looksLikePdfBytes(redirectedBytes)) {
             const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
@@ -1475,6 +1605,34 @@ async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRe
     return invoiceUrlPdf;
   }
   return { pdfDataUrl: "", pdfBase64: "", pdfSource: "", pdfUrl: "" };
+}
+
+async function fetchPreviewPdfData(baseUrl, headers, previewInvoiceId, invoiceRecord) {
+  const cacheKey = createPreviewPdfCacheKey(baseUrl, previewInvoiceId);
+  const cached = readPreviewPdfCache(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  if (previewPdfInFlight.has(cacheKey)) {
+    return previewPdfInFlight.get(cacheKey);
+  }
+  const requestPromise = fetchPreviewPdfDataUncached(
+    baseUrl,
+    headers,
+    previewInvoiceId,
+    invoiceRecord
+  )
+    .then((value) => {
+      if (value && (value.pdfDataUrl || value.pdfBase64 || value.pdfUrl)) {
+        writePreviewPdfCache(cacheKey, value);
+      }
+      return value;
+    })
+    .finally(() => {
+      previewPdfInFlight.delete(cacheKey);
+    });
+  previewPdfInFlight.set(cacheKey, requestPromise);
+  return requestPromise;
 }
 
 function collectPreviewPdfUrlCandidates(invoiceRecord) {
@@ -1538,7 +1696,13 @@ async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRec
       signedUrlFallback = candidateUrl;
     }
     try {
-      const pdfBytes = await requestBinaryWithMethods(candidateUrl, requestHeaders, ["GET"]);
+      const pdfBytes = await withRetry(
+        () => requestBinaryWithMethods(candidateUrl, requestHeaders, ["GET"]),
+        {
+          attempts: PREVIEW_PDF_MAX_ATTEMPTS,
+          baseDelayMs: PREVIEW_PDF_RETRY_BASE_DELAY_MS,
+        }
+      );
       if (looksLikePdfBytes(pdfBytes)) {
         const logoMaskedPdfBytes = await removeLogoFromPdfBytes(pdfBytes);
         const pdfBase64 = Buffer.from(logoMaskedPdfBytes).toString("base64");
@@ -1555,10 +1719,12 @@ async function fetchPreviewPdfDataFromUrlCandidates(baseUrl, headers, invoiceRec
           signedUrlFallback = redirectedPdfUrl;
         }
         try {
-          const redirectedBytes = await requestBinaryWithMethods(
-            redirectedPdfUrl,
-            { Accept: "*/*" },
-            ["GET"]
+          const redirectedBytes = await withRetry(
+            () => requestBinaryWithMethods(redirectedPdfUrl, { Accept: "*/*" }, ["GET"]),
+            {
+              attempts: PREVIEW_PDF_MAX_ATTEMPTS,
+              baseDelayMs: PREVIEW_PDF_RETRY_BASE_DELAY_MS,
+            }
           );
           if (looksLikePdfBytes(redirectedBytes)) {
             const logoMaskedRedirectedBytes = await removeLogoFromPdfBytes(redirectedBytes);
@@ -1637,10 +1803,11 @@ async function attachPreviewPdfToInvoices(baseUrl, headers, invoices, diagnostic
         const invoiceId = encodeURIComponent(entry.invoiceId);
         try {
           const previewPdf = await fetchPreviewPdfData(baseUrl, headers, invoiceId, entry.invoice);
-          if (previewPdf && previewPdf.pdfBase64) {
+          if (previewPdf && (previewPdf.pdfBase64 || previewPdf.pdfDataUrl || previewPdf.pdfUrl)) {
             entry.invoice.previewPdfBase64 = previewPdf.pdfBase64;
             entry.invoice.previewPdfDataUrl = previewPdf.pdfDataUrl;
             entry.invoice.previewPdfSource = previewPdf.pdfSource;
+            entry.invoice.previewPdfUrl = previewPdf.pdfUrl || "";
             succeeded += 1;
           } else {
             failed += 1;
@@ -2095,11 +2262,12 @@ function normalizeProject(record) {
     teamMembers.map((member) => pickFirst(member && (member.userId || member.id || member._id)))
   );
   const customFieldValues = extractCustomFieldAliases(record);
+  const expertAdvisorField = pickFirst(customFieldValues.expertAdvisor[0]);
   return {
     id,
     name,
     accountName,
-    ownerName: ownerName || memberNames[0] || "",
+    ownerName: pickFirst(expertAdvisorField || ownerName || memberNames[0] || ""),
     ownerEmail: ownerEmail || memberEmails[0] || "",
     ownerUserId: ownerUserId || memberUserIds[0] || "",
     memberEmails,
@@ -2266,6 +2434,12 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     normalizeEmail(projectInfo.ownerEmail),
   ].concat(projectInfo.memberEmails || []));
   const customFieldValues = extractCustomFieldAliases(record);
+  const expertAdvisorFieldRaw = pickFirst(customFieldValues.expertAdvisor[0]);
+  const expertAdvisorFieldName = isLikelyDisplayName(expertAdvisorFieldRaw)
+    ? expertAdvisorFieldRaw
+    : "";
+  const expertAdvisorFieldUserId = extractUserIdValue(expertAdvisorFieldRaw);
+  const expertAdvisorFieldEmail = toEmailOrEmpty(expertAdvisorFieldRaw);
   const lineItems = collectInvoiceLineItems(record);
   const lineItemQuantity = sumLineItemQuantity(lineItems);
   const quantityHoursFromFields = customFieldValues.quantityHours.reduce(
@@ -2302,7 +2476,7 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   );
   const createdByFieldRaw = pickFirst(customFieldValues.createdBy[0]);
   const createdByFieldName = isLikelyDisplayName(createdByFieldRaw) ? createdByFieldRaw : "";
-  const createdByFieldEmail = normalizeEmail(createdByFieldRaw);
+  const createdByFieldEmail = toEmailOrEmpty(createdByFieldRaw);
   const createdByName =
     pickFirst(
       (isLikelyDisplayName(record.createdByName) ? record.createdByName : "") ||
@@ -2335,13 +2509,16 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     invoiceId: pickFirst(record.invoiceId || record.id || record._id),
     invoiceName,
     ownerName: pickFirst(
-      createdByName ||
+      expertAdvisorFieldName ||
+        expertAdvisorFieldRaw ||
+        record.expertAdvisorName ||
+        record.expertAdvisor ||
+        record.projectManagerName ||
+        record.pmName ||
+        createdByName ||
         createdByFieldName ||
         createdByFieldRaw ||
         submittedByName ||
-        record.projectManagerName ||
-        record.expertAdvisorName ||
-        record.pmName ||
         record.ownerName ||
         record.assigneeName ||
         fullName(record.createdBy) ||
@@ -2406,14 +2583,29 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
               record.submittedByUser.userEmail))
       )
     ),
+    expertAdvisorUserId: pickFirst(
+      expertAdvisorFieldUserId || record.expertAdvisorId || record.projectManagerId
+    ),
+    expertAdvisorEmail: toEmailOrEmpty(
+      pickFirst(record.expertAdvisorEmail || record.projectManagerEmail || expertAdvisorFieldEmail)
+    ),
     contractName,
     hub,
     program,
     quantityHours,
     associatedEmails: dedupeStrings(
-      associatedEmails.concat(createdByFieldEmail ? [createdByFieldEmail] : [], projectEmails)
+      associatedEmails.concat(
+        expertAdvisorFieldEmail ? [expertAdvisorFieldEmail] : [],
+        createdByFieldEmail ? [createdByFieldEmail] : [],
+        projectEmails
+      )
     ),
-    associatedUserIds: dedupeStrings(associatedUserIds.concat(projectUserIds)),
+    associatedUserIds: dedupeStrings(
+      associatedUserIds.concat(
+        expertAdvisorFieldUserId ? [expertAdvisorFieldUserId] : [],
+        projectUserIds
+      )
+    ),
     sourceProjectId: projectInfo.id || "",
     sourceProjectName: projectInfo.name || "",
   };
@@ -2486,7 +2678,8 @@ function normalizeInvoicePreview(invoiceRecord, lineRecords, paymentRecords) {
     ),
     billToName:
       pickFirst(
-        (previewAliasValues.createdBy && previewAliasValues.createdBy[0]) ||
+        (previewAliasValues.expertAdvisor && previewAliasValues.expertAdvisor[0]) ||
+          (previewAliasValues.createdBy && previewAliasValues.createdBy[0]) ||
           (invoiceRecord && (invoiceRecord.submittedByName || invoiceRecord.createdByName))
       ) ||
       fullName(submitter),
@@ -2688,6 +2881,7 @@ function buildMemberLookups(members) {
 function resolveMemberDisplayNameFromInvoice(invoice, lookups) {
   const memberLookups = lookups || { byId: new Map(), byEmail: new Map() };
   const idCandidates = dedupeStrings([
+    pickFirst(invoice.expertAdvisorUserId),
     pickFirst(invoice.createdByUserId),
     pickFirst(invoice.submittedByUserId),
   ].concat(Array.isArray(invoice.associatedUserIds) ? invoice.associatedUserIds : []));
@@ -2698,6 +2892,7 @@ function resolveMemberDisplayNameFromInvoice(invoice, lookups) {
     }
   }
   const emailCandidates = dedupeStrings([
+    normalizeEmail(invoice.expertAdvisorEmail),
     normalizeEmail(invoice.createdByEmail),
     normalizeEmail(invoice.submittedByEmail),
   ].concat(Array.isArray(invoice.associatedEmails) ? invoice.associatedEmails : []));
@@ -2732,6 +2927,28 @@ function resolveProjectAccountForInvoice(invoice, projectLookup) {
   return "";
 }
 
+function resolveProjectOwnerForInvoice(invoice, projectLookup) {
+  const lookup = projectLookup || { byId: new Map(), byCanonicalName: new Map() };
+  const sourceProjectId = pickFirst(invoice && invoice.sourceProjectId);
+  if (sourceProjectId && lookup.byId.has(sourceProjectId)) {
+    const project = lookup.byId.get(sourceProjectId) || {};
+    const owner = pickFirst(project.ownerName);
+    if (isLikelyDisplayName(owner)) {
+      return owner;
+    }
+  }
+  const sourceProjectName = pickFirst(invoice && invoice.sourceProjectName);
+  const sourceProjectCanonical = canonicalProjectName(sourceProjectName);
+  if (sourceProjectCanonical && lookup.byCanonicalName.has(sourceProjectCanonical)) {
+    const project = lookup.byCanonicalName.get(sourceProjectCanonical) || {};
+    const owner = pickFirst(project.ownerName);
+    if (isLikelyDisplayName(owner)) {
+      return owner;
+    }
+  }
+  return "";
+}
+
 function enrichInvoiceDisplayData(invoice, memberLookups, projectLookup) {
   if (!invoice || typeof invoice !== "object") {
     return invoice;
@@ -2741,8 +2958,9 @@ function enrichInvoiceDisplayData(invoice, memberLookups, projectLookup) {
     !isLikelyDisplayName(next.ownerName) || normalizeFieldLabel(next.ownerName) === "unassigned";
   if (ownerNeedsOverride) {
     const fromMember = resolveMemberDisplayNameFromInvoice(next, memberLookups);
+    const fromProject = resolveProjectOwnerForInvoice(next, projectLookup);
     const fallbackOwner = pickFirst(next.createdByName || next.ownerName);
-    const resolvedOwner = pickFirst(fromMember || fallbackOwner);
+    const resolvedOwner = pickFirst(fromMember || fromProject || fallbackOwner);
     if (resolvedOwner) {
       next.ownerName = resolvedOwner;
     }
@@ -3249,6 +3467,12 @@ module.exports = {
     const prefetchInvoiceIdRequested = pickFirst(
       request.prefetchInvoiceId || previewInvoiceIdRequested || request.invoiceId
     );
+    const prefetchInvoiceIdsRequested = dedupeStrings(
+      (Array.isArray(request.prefetchInvoiceIds) ? request.prefetchInvoiceIds : [])
+        .concat(prefetchInvoiceIdRequested ? [prefetchInvoiceIdRequested] : [])
+        .map((value) => pickFirst(value))
+        .filter(Boolean)
+    );
     const prefetchInvoiceNumberRequested = canonicalInvoiceNumber(
       pickFirst(
         request.prefetchInvoiceNumber ||
@@ -3257,18 +3481,26 @@ module.exports = {
           request.invoiceNumber
       )
     );
+    const prefetchInvoiceNumbersRequested = dedupeStrings(
+      (Array.isArray(request.prefetchInvoiceNumbers) ? request.prefetchInvoiceNumbers : [])
+        .concat(prefetchInvoiceNumberRequested ? [prefetchInvoiceNumberRequested] : [])
+        .map((value) => canonicalInvoiceNumber(value))
+        .filter(Boolean)
+    );
     const isTargetedPreviewPrefetchRequest =
       !isPreviewRequest &&
       request.prefetchPreviewPdfs === true &&
-      Boolean(prefetchInvoiceIdRequested || prefetchInvoiceNumberRequested);
+      Boolean(prefetchInvoiceIdsRequested.length || prefetchInvoiceNumbersRequested.length);
     const isAnyPreviewPrefetchRequest = request.prefetchPreviewPdfs === true;
     diagnostics.previewRequest = {
       isPreviewRequest,
       disablePreviewMode,
       previewInvoiceIdRequested,
       previewInvoiceNumberRequested,
-      prefetchInvoiceIdRequested,
-      prefetchInvoiceNumberRequested,
+      prefetchInvoiceIdRequested: prefetchInvoiceIdsRequested[0] || "",
+      prefetchInvoiceIdsRequested,
+      prefetchInvoiceNumberRequested: prefetchInvoiceNumbersRequested[0] || "",
+      prefetchInvoiceNumbersRequested,
       isTargetedPreviewPrefetchRequest,
       requestMode: String(request.requestMode || request.mode || ""),
     };
@@ -3302,8 +3534,8 @@ module.exports = {
               );
             }
             const previewInvoiceIds = dedupeStrings([
-              previewInvoiceIdRequested,
               pickFirst(resolvedInvoiceId),
+              previewInvoiceIdRequested,
             ]).filter(Boolean);
             if (!previewInvoiceIds.length) {
               throw new Error("Invoice ID could not be resolved for preview PDF.");
@@ -3573,13 +3805,11 @@ module.exports = {
               pickFirst(normalized.invoiceNumber || buildInvoiceDisplayNumber(row))
             );
             const matchedById =
-              prefetchInvoiceIdRequested &&
               normalizedInvoiceId &&
-              normalizedInvoiceId === prefetchInvoiceIdRequested;
+              prefetchInvoiceIdsRequested.includes(normalizedInvoiceId);
             const matchedByNumber =
-              prefetchInvoiceNumberRequested &&
               normalizedInvoiceNumber &&
-              normalizedInvoiceNumber === prefetchInvoiceNumberRequested;
+              prefetchInvoiceNumbersRequested.includes(normalizedInvoiceNumber);
             if (!matchedById && !matchedByNumber) {
               continue;
             }
@@ -3727,21 +3957,25 @@ module.exports = {
             (request.preview && request.preview.invoiceNumber)
         )
       );
+      const targetPreviewInvoiceIdSet = new Set(prefetchInvoiceIdsRequested);
+      if (targetPreviewInvoiceId) {
+        targetPreviewInvoiceIdSet.add(targetPreviewInvoiceId);
+      }
+      const targetPreviewInvoiceNumberSet = new Set(prefetchInvoiceNumbersRequested);
+      if (targetPreviewInvoiceNumber) {
+        targetPreviewInvoiceNumberSet.add(targetPreviewInvoiceNumber);
+      }
       let invoicesToPrefetch = dedupedInvoices;
-      if (targetPreviewInvoiceId || targetPreviewInvoiceNumber) {
+      if (targetPreviewInvoiceIdSet.size || targetPreviewInvoiceNumberSet.size) {
         const targeted = dedupedInvoices.filter((invoice) => {
           const invoiceId = pickFirst(invoice && (invoice.invoiceId || invoice.id));
           const invoiceNumber = canonicalInvoiceNumber(
             pickFirst(invoice && invoice.invoiceNumber)
           );
-          if (targetPreviewInvoiceId && invoiceId && invoiceId === targetPreviewInvoiceId) {
+          if (invoiceId && targetPreviewInvoiceIdSet.has(invoiceId)) {
             return true;
           }
-          if (
-            targetPreviewInvoiceNumber &&
-            invoiceNumber &&
-            invoiceNumber === targetPreviewInvoiceNumber
-          ) {
+          if (invoiceNumber && targetPreviewInvoiceNumberSet.has(invoiceNumber)) {
             return true;
           }
           return false;

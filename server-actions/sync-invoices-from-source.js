@@ -497,6 +497,17 @@ function toFieldText(value) {
   return String(value).trim();
 }
 
+function explodeFieldValueParts(value) {
+  const text = toFieldText(value);
+  if (!text) {
+    return [];
+  }
+  return text
+    .split(/\r?\n|\|/)
+    .map((part) => pickFirst(part))
+    .filter(Boolean);
+}
+
 function extractNamedCustomFieldValues(fields) {
   const output = {
     contractName: [],
@@ -519,19 +530,15 @@ function extractNamedCustomFieldValues(fields) {
     if (!label) {
       return;
     }
-    const value = toFieldText(entry.value);
-    if (!value) {
+    const values = explodeFieldValueParts(entry.value);
+    if (!values.length) {
       return;
     }
     Object.keys(FIELD_ALIAS_GROUPS).forEach((targetKey) => {
       if (!fieldLabelMatchesAlias(label, FIELD_ALIAS_GROUPS[targetKey])) {
         return;
       }
-      value
-        .split(",")
-        .map((part) => pickFirst(part))
-        .filter(Boolean)
-        .forEach((part) => output[targetKey].push(part));
+      values.forEach((part) => output[targetKey].push(part));
     });
   });
   output.contractName = dedupeStrings(output.contractName);

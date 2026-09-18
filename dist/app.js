@@ -126,7 +126,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-zip-mapping-stability-20260917b";
+  window.__invoiceAccessBuild = "preview-zip-mapping-stability-20260918a";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3047,6 +3047,11 @@
       node && node.invoiceToSourceMappings,
       node,
     ].forEach((source) => walk(source, 0, ""));
+    const explodeFieldValueParts = (value) =>
+      String(value || "")
+        .split(/\r?\n|\|/)
+        .map((part) => pickFirst(part))
+        .filter(Boolean);
     const aliases = {};
     Object.keys(FIELD_ALIAS_GROUPS).forEach((key) => {
       aliases[key] = [];
@@ -3056,11 +3061,7 @@
         if (!fieldLabelMatchesAlias(entry.label, FIELD_ALIAS_GROUPS[targetKey])) {
           return;
         }
-        entry.value
-          .split(",")
-          .map((part) => pickFirst(part))
-          .filter(Boolean)
-          .forEach((part) => aliases[targetKey].push(part));
+        explodeFieldValueParts(entry.value).forEach((part) => aliases[targetKey].push(part));
       });
     });
     Object.keys(aliases).forEach((key) => {

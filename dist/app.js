@@ -15,12 +15,13 @@
   ];
   const SERVER_ACTION_API_BASE_URL = "https://api.rocketlane.com";
   const INVOICE_STATUS_FILTER_OPTIONS = ["Paid", "Approved"];
-  const ZIP_PREVIEW_FETCH_CONCURRENCY = 4;
-  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 12000;
-  const ZIP_PREVIEW_RETRY_ATTEMPTS = 3;
+  const ZIP_PREVIEW_FETCH_CONCURRENCY = 2;
+  const ZIP_PREVIEW_REQUEST_TIMEOUT_MS = 20000;
+  const ZIP_PREVIEW_RETRY_ATTEMPTS = 4;
   const ZIP_PREVIEW_RETRY_BASE_DELAY_MS = 400;
-  const PREVIEW_FETCH_TIMEOUT_MS = 10000;
-  const PREVIEW_PDF_ONLY_TIMEOUT_MS = 12000;
+  const PREVIEW_FETCH_TIMEOUT_MS = 30000;
+  const PREVIEW_PDF_ONLY_TIMEOUT_MS = 35000;
+  const ZIP_BATCH_PREFETCH_LIMIT = 6;
   const FIELD_ALIAS_GROUPS = {
     accountName: [
       "account",
@@ -126,7 +127,7 @@
     },
   };
 
-  window.__invoiceAccessBuild = "preview-zip-mapping-stability-20260918a";
+  window.__invoiceAccessBuild = "preview-zip-mapping-stability-20260918b";
   window.__invoiceAccessDebug = {
     reason: "booting",
     connected: false,
@@ -3420,6 +3421,20 @@
         return name;
       }
     }
+    const fallbackDisplay = pickFirst(
+      invoice &&
+        (invoice.createdByName ||
+          invoice.submittedByName ||
+          invoice.projectManagerName ||
+          invoice.expertAdvisorName ||
+          "")
+    );
+    if (isLikelyDisplayName(fallbackDisplay)) {
+      return fallbackDisplay;
+    }
+    if (isLikelyIdentifierValue(directOwner)) {
+      return "Unassigned";
+    }
     return directOwner || "Unassigned";
   }
 
@@ -3428,11 +3443,12 @@
       return null;
     }
     const invoiceAliasValues = extractInvoiceFieldAliasValues(invoice);
-    const aliasOwner = pickFirst(
+    const aliasOwnerRaw = pickFirst(
       (invoiceAliasValues.expertAdvisor && invoiceAliasValues.expertAdvisor[0]) ||
         (invoiceAliasValues.createdBy && invoiceAliasValues.createdBy[0]) ||
         ""
     );
+    const aliasOwner = isLikelyDisplayName(aliasOwnerRaw) ? aliasOwnerRaw : "";
     const aliasAccount = pickFirst(
       (invoiceAliasValues.accountName && invoiceAliasValues.accountName[0]) || ""
     );
@@ -6055,9 +6071,10 @@
     }
     try {
       const zip = new JSZipCtor();
-      const batchPrefetchedPreviews = await fetchInvoicePreviewBatchFromServerAction(
-        invoicesToExport
-      );
+      const batchPrefetchedPreviews =
+        invoicesToExport.length <= ZIP_BATCH_PREFETCH_LIMIT
+          ? await fetchInvoicePreviewBatchFromServerAction(invoicesToExport)
+          : new Map();
       const csvRows = [
         [
           "Invoice Status",

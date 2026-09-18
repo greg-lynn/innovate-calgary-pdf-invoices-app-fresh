@@ -2269,7 +2269,10 @@ function normalizeProject(record) {
     teamMembers.map((member) => pickFirst(member && (member.userId || member.id || member._id)))
   );
   const customFieldValues = extractCustomFieldAliases(record);
-  const expertAdvisorField = pickFirst(customFieldValues.expertAdvisor[0]);
+  const expertAdvisorFieldRaw = pickFirst(customFieldValues.expertAdvisor[0]);
+  const expertAdvisorField = isLikelyDisplayName(expertAdvisorFieldRaw)
+    ? expertAdvisorFieldRaw
+    : "";
   return {
     id,
     name,
@@ -2445,6 +2448,18 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
   const expertAdvisorFieldName = isLikelyDisplayName(expertAdvisorFieldRaw)
     ? expertAdvisorFieldRaw
     : "";
+  const directExpertAdvisorName = isLikelyDisplayName(record.expertAdvisorName)
+    ? pickFirst(record.expertAdvisorName)
+    : "";
+  const directProjectManagerName = isLikelyDisplayName(record.projectManagerName)
+    ? pickFirst(record.projectManagerName)
+    : "";
+  const directExpertAdvisorText = isLikelyDisplayName(record.expertAdvisor)
+    ? pickFirst(record.expertAdvisor)
+    : "";
+  const directProjectManagerText = isLikelyDisplayName(record.projectManager)
+    ? pickFirst(record.projectManager)
+    : "";
   const expertAdvisorFieldUserId = extractUserIdValue(expertAdvisorFieldRaw);
   const expertAdvisorFieldEmail = toEmailOrEmpty(expertAdvisorFieldRaw);
   const lineItems = collectInvoiceLineItems(record);
@@ -2517,11 +2532,11 @@ function normalizeInvoiceRecord(record, project, fallbackAccountName) {
     invoiceName,
     ownerName: pickFirst(
       expertAdvisorFieldName ||
-        expertAdvisorFieldRaw ||
-        record.expertAdvisorName ||
-        record.expertAdvisor ||
-        record.projectManagerName ||
-        record.pmName ||
+        directExpertAdvisorName ||
+        directExpertAdvisorText ||
+        directProjectManagerName ||
+        directProjectManagerText ||
+        (isLikelyDisplayName(record.pmName) ? pickFirst(record.pmName) : "") ||
         createdByName ||
         createdByFieldName ||
         createdByFieldRaw ||
